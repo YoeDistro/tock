@@ -76,12 +76,15 @@
 use capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm;
 use capsules_extra::net::ieee802154::MacAddress;
 use capsules_extra::net::ipv6::ip_utils::IPAddr;
+use capsules_extra::sha256::Sha256Software;
 use kernel::component::Component;
+use kernel::hil::digest::Digest;
 use kernel::hil::led::LedLow;
 use kernel::hil::time::Counter;
 #[allow(unused_imports)]
 use kernel::hil::usb::Client;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
+use kernel::process_checker::basic::AppCheckerSha256;
 use kernel::scheduler::round_robin::RoundRobinSched;
 #[allow(unused_imports)]
 use kernel::{capabilities, create_capability, debug, debug_gpio, debug_verbose, static_init};
@@ -239,6 +242,7 @@ pub struct Platform {
     >,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
+    credentials_checking_policy: &'static AppCheckerSha256,
 }
 
 const KEYBOARD_HID: usize = capsules_core::driver::NUM::KeyboardHid as usize;
@@ -291,7 +295,7 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
-    type CredentialsCheckingPolicy = ();
+    type CredentialsCheckingPolicy = AppCheckerSha256;
     type Scheduler = RoundRobinSched<'static>;
     type SchedulerTimer = cortexm4::systick::SysTick;
     type WatchDog = ();
@@ -307,7 +311,7 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
         &()
     }
     fn credentials_checking_policy(&self) -> &'static Self::CredentialsCheckingPolicy {
-        &()
+        self.credentials_checking_policy
     }
     fn scheduler(&self) -> &Self::Scheduler {
         self.scheduler
@@ -873,6 +877,18 @@ pub unsafe fn main() {
 
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
 
+    // Create the software-based SHA engine.
+    let sha = static_init!(Sha256Software<'static>, Sha256Software::new());
+    kernel::deferred_call::DeferredCallClient::register(sha);
+
+    // Create the credential checker.
+    static mut SHA256_CHECKER_BUF: [u8; 32] = [0; 32];
+    let checker = static_init!(
+        AppCheckerSha256,
+        AppCheckerSha256::new(sha, &mut SHA256_CHECKER_BUF)
+    );
+    sha.set_client(checker);
+
     //--------------------------------------------------------------------------
     // TESTS
     //--------------------------------------------------------------------------
@@ -961,6 +977,7 @@ pub unsafe fn main() {
         keyboard_hid_driver,
         scheduler,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
+        credentials_checking_policy: checker,
     };
 
     let _ = platform.pconsole.start();
@@ -987,8 +1004,9 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
-    kernel::process::load_processes(
+    kernel::process::load_and_check_processes(
         board_kernel,
+        &platform,
         chip,
         core::slice::from_raw_parts(
             &_sapps as *const u8,
