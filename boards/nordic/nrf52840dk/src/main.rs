@@ -89,6 +89,10 @@ use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 use nrf52_components::{self, UartChannel, UartPins};
 
+// OTA Dependencies
+use capsules_extra::nonvolatile_storage_driver;
+use kernel::platform::chip::Chip;
+
 #[allow(dead_code)]
 mod test;
 
@@ -128,7 +132,7 @@ const PAN_ID: u16 = 0xABCD;
 const DST_MAC_ADDR: capsules_extra::net::ieee802154::MacAddress =
     capsules_extra::net::ieee802154::MacAddress::Short(49138);
 const DEFAULT_CTX_PREFIX_LEN: u8 = 8; //Length of context for 6LoWPAN compression
-const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0_u8; 16]; //Context for 6LoWPAN Compression
+const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0 as u8; 16]; //Context for 6LoWPAN Compression
 
 /// Debug Writer
 pub mod io;
@@ -151,42 +155,22 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
+/********************OTA Variables***************************/
+//This variable is used to save initial value of unused sram start address before launching OTA_app
+static mut UNUSED_RAM_START_ADDR_INIT_VAL: usize = 0;
+//This variable is used to save process index loaded by tockloader, which will be used in loading app by OTA_app
+static mut PROCESS_INDEX_INIT_VAL: usize = 0;
+//This arrays is used to save start address and length of process, which will be used in checking overlap region between a new app and already loaded apps
+static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0];
+static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0]; 
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
-//------------------------------------------------------------------------------
-// SYSCALL DRIVER TYPE DEFINITIONS
-//------------------------------------------------------------------------------
-
-type AlarmDriver = components::alarm::AlarmDriverComponentType<nrf52840::rtc::Rtc<'static>>;
-
-// TicKV
-type Mx25r6435f = components::mx25r6435f::Mx25r6435fComponentType<
-    nrf52840::spi::SPIM<'static>,
-    nrf52840::gpio::GPIOPin<'static>,
-    nrf52840::rtc::Rtc<'static>,
->;
-const TICKV_PAGE_SIZE: usize =
-    core::mem::size_of::<<Mx25r6435f as kernel::hil::flash::Flash>::Page>();
-type Siphasher24 = components::siphash::Siphasher24ComponentType;
-type TicKVDedicatedFlash =
-    components::tickv::TicKVDedicatedFlashComponentType<Mx25r6435f, Siphasher24, TICKV_PAGE_SIZE>;
-type TicKVKVStore = components::kv::TicKVKVStoreComponentType<
-    TicKVDedicatedFlash,
-    capsules_extra::tickv::TicKVKeyType,
->;
-type KVStorePermissions = components::kv::KVStorePermissionsComponentType<TicKVKVStore>;
-type VirtualKVPermissions = components::kv::VirtualKVPermissionsComponentType<KVStorePermissions>;
-type KVDriver = components::kv::KVDriverComponentType<VirtualKVPermissions>;
-
-// Temperature
-type TemperatureDriver =
-    components::temperature::TemperatureComponentType<nrf52840::temperature::Temp<'static>>;
-
 /// Supported drivers by the platform
-pub struct Platform {
+pub struct Platform <C: 'static + Chip> {
     ble_radio: &'static capsules_extra::ble_advertising_driver::BLE<
         'static,
         nrf52840::ble_radio::Radio<'static>,
@@ -194,12 +178,12 @@ pub struct Platform {
     >,
     ieee802154_radio: &'static capsules_extra::ieee802154::RadioDriver<'static>,
     button: &'static capsules_core::button::Button<'static, nrf52840::gpio::GPIOPin<'static>>,
-    pconsole: &'static capsules_core::process_console::ProcessConsole<
-        'static,
-        { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
-        VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
-        components::process_console::Capability,
-    >,
+    // pconsole: &'static capsules_core::process_console::ProcessConsole<
+    //     'static,
+    //     { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
+    //     VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
+    //     components::process_console::Capability,
+    // >,
     console: &'static capsules_core::console::Console<'static>,
     gpio: &'static capsules_core::gpio::GPIO<'static, nrf52840::gpio::GPIOPin<'static>>,
     led: &'static capsules_core::led::LedDriver<
@@ -209,18 +193,20 @@ pub struct Platform {
     >,
     rng: &'static capsules_core::rng::RngDriver<'static>,
     adc: &'static capsules_core::adc::AdcDedicated<'static, nrf52840::adc::Adc<'static>>,
-    temp: &'static TemperatureDriver,
+    temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     analog_comparator: &'static capsules_extra::analog_comparator::AnalogComparator<
         'static,
         nrf52840::acomp::Comparator<'static>,
     >,
-    alarm: &'static AlarmDriver,
-    udp_driver: &'static capsules_extra::net::udp::UDPDriver<'static>,
-    thread_driver: &'static capsules_extra::net::thread::driver::ThreadNetworkDriver<
+    alarm: &'static capsules_core::alarm::AlarmDriver<
         'static,
-        VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
+        capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<
+            'static,
+            nrf52840::rtc::Rtc<'static>,
+        >,
     >,
+    udp_driver: &'static capsules_extra::net::udp::UDPDriver<'static>,
     i2c_master_slave: &'static capsules_core::i2c_master_slave_driver::I2CMasterSlaveDriver<
         'static,
         nrf52840::i2c::TWI<'static>,
@@ -232,12 +218,41 @@ pub struct Platform {
             nrf52840::spi::SPIM<'static>,
         >,
     >,
-    kv_driver: &'static KVDriver,
+    kv_driver: &'static capsules_extra::kv_driver::KVStoreDriver<
+        'static,
+        capsules_extra::virtual_kv::VirtualKVPermissions<
+            'static,
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                'static,
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    'static,
+                    capsules_extra::tickv::TicKVSystem<
+                        'static,
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            'static,
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM<'static>,
+                            >,
+                            nrf52840::gpio::GPIOPin<'static>,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        { capsules_extra::mx25r6435f::SECTOR_SIZE as usize },
+                    >,
+                    [u8; 8],
+                >,
+            >,
+        >,
+    >,
+    nonvolatile_storage:
+        &'static capsules_extra::nonvolatile_storage_driver::NonvolatileStorage<'static>,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
+    process_loader: kernel::process_load_utilities::ProcessLoader<C>,
 }
 
-impl SyscallDriverLookup for Platform {
+impl <C: 'static + Chip> SyscallDriverLookup for Platform <C> {
     fn with_driver<F, R>(&self, driver_num: usize, f: F) -> R
     where
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
@@ -258,9 +273,13 @@ impl SyscallDriverLookup for Platform {
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
             capsules_core::i2c_master_slave_driver::DRIVER_NUM => f(Some(self.i2c_master_slave)),
             capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi_controller)),
-            capsules_extra::net::thread::driver::DRIVER_NUM => f(Some(self.thread_driver)),
             capsules_extra::kv_driver::DRIVER_NUM => f(Some(self.kv_driver)),
+            nonvolatile_storage_driver::DRIVER_NUM => {
+                f(Some(self.nonvolatile_storage))
+            }
+            kernel::process_load_utilities::DRIVER_NUM => f(Some(&self.process_loader)),
             _ => f(None),
+            
         }
     }
 }
@@ -283,7 +302,7 @@ unsafe fn create_peripherals() -> &'static mut Nrf52840DefaultPeripherals<'stati
     nrf52840_peripherals
 }
 
-impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'static>>>
+impl <C: 'static + Chip> KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'static>>>
     for Platform
 {
     type SyscallDriverLookup = Self;
@@ -503,9 +522,9 @@ pub unsafe fn main() {
     ));
 
     // Tool for displaying information about processes.
-    let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
-        .finalize(components::process_printer_text_component_static!());
-    PROCESS_PRINTER = Some(process_printer);
+    // let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
+    //     .finalize(components::process_printer_text_component_static!());
+    // PROCESS_PRINTER = Some(process_printer);
 
     // Virtualize the UART channel for the console and for kernel debug.
     let uart_mux = components::console::UartMuxComponent::new(uart_channel, 115200)
@@ -513,16 +532,16 @@ pub unsafe fn main() {
 
     // Create the process console, an interactive terminal for managing
     // processes.
-    let pconsole = components::process_console::ProcessConsoleComponent::new(
-        board_kernel,
-        uart_mux,
-        mux_alarm,
-        process_printer,
-        Some(cortexm4::support::reset),
-    )
-    .finalize(components::process_console_component_static!(
-        nrf52840::rtc::Rtc<'static>
-    ));
+    // let pconsole = components::process_console::ProcessConsoleComponent::new(
+    //     board_kernel,
+    //     uart_mux,
+    //     mux_alarm,
+    //     process_printer,
+    //     Some(cortexm4::support::reset),
+    // )
+    // .finalize(components::process_console_component_static!(
+    //     nrf52840::rtc::Rtc<'static>
+    // ));
 
     // Setup the serial console for userspace.
     let console = components::console::ConsoleComponent::new(
@@ -583,7 +602,10 @@ pub unsafe fn main() {
     let local_ip_ifaces = static_init!(
         [IPAddr; 3],
         [
-            IPAddr::generate_from_mac(capsules_extra::net::ieee802154::MacAddress::Long(device_id)),
+            IPAddr([
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f,
+            ]),
             IPAddr([
                 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
                 0x1e, 0x1f,
@@ -599,7 +621,7 @@ pub unsafe fn main() {
         DEFAULT_CTX_PREFIX_LEN,
         DEFAULT_CTX_PREFIX,
         DST_MAC_ADDR,
-        MacAddress::Long(device_id),
+        MacAddress::Short(device_id_bottom_16),
         local_ip_ifaces,
         mux_alarm,
     )
@@ -616,23 +638,54 @@ pub unsafe fn main() {
     )
     .finalize(components::udp_driver_component_static!(nrf52840::rtc::Rtc));
 
-    let thread_driver = components::thread_network::ThreadNetworkComponent::new(
+    //--------------------------------------------------------------------------
+    // Process Loader (OTA)
+    //--------------------------------------------------------------------------
+    // Can this initialize be pushed earlier, or into component? -pal
+    let _ = rf233.initialize(&mut RF233_BUF, &mut RF233_REG_WRITE, &mut RF233_REG_READ);
+    let (_, mux_mac) = components::ieee802154::Ieee802154Component::new(
         board_kernel,
-        capsules_extra::net::thread::driver::DRIVER_NUM,
-        udp_send_mux,
-        udp_recv_mux,
-        udp_port_table,
+        capsules_extra::ieee802154::DRIVER_NUM,
+        rf233,
         aes_mux,
-        device_id,
-        mux_alarm,
+        PAN_ID,
+        serial_num_bottom_16,
+        DEFAULT_EXT_SRC_MAC,
     )
-    .finalize(components::thread_network_component_static!(
-        nrf52840::rtc::Rtc,
-        nrf52840::aes::AesECB<'static>
+    .finalize(components::ieee802154_component_static!(
+        capsules_extra::rf233::RF233<
+            'static,
+            VirtualSpiMasterDevice<'static, sam4l::spi::SpiHw<'static>>,
+        >,
+        sam4l::aes::Aes<'static>
     ));
-
-    ieee802154_radio.set_key_procedure(thread_driver);
-    ieee802154_radio.set_device_procedure(thread_driver);
+    
+    let process_loader = kernel::process::ProcessLoader::init(
+        board_kernel,
+        chip,
+        &FAULT_RESPONSE,
+        &memory_allocation_capability,
+        PROCESSES.as_mut_ptr(),
+        PROCESSES_REGION_START_ADDRESS.as_mut_ptr(),
+        PROCESSES_REGION_SIZE.as_mut_ptr(),
+        NUM_PROCS,
+        &_sapps as *const u8 as usize,
+        &_eapps as *const u8 as usize,
+        &_eappmem as *const u8 as usize,
+        &UNUSED_RAM_START_ADDR_INIT_VAL,
+        &PROCESS_INDEX_INIT_VAL,
+    );
+    power::configure_submodules(
+        &peripherals.pa,
+        &peripherals.pb,
+        &peripherals.pc,
+        power::SubmoduleConfig {
+            // rf233: true,
+            nrf52840: true,
+            sensors: true,
+            trng: true,
+        },
+    );
 
     //--------------------------------------------------------------------------
     // TEMPERATURE (internal)
@@ -643,9 +696,7 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         &base_peripherals.temp,
     )
-    .finalize(components::temperature_component_static!(
-        nrf52840::temperature::Temp
-    ));
+    .finalize(components::temperature_component_static!());
 
     //--------------------------------------------------------------------------
     // RANDOM NUMBER GENERATOR
@@ -728,10 +779,35 @@ pub unsafe fn main() {
     // TICKV
     //--------------------------------------------------------------------------
 
+    const TICKV_PAGE_SIZE: usize = core::mem::size_of::<
+        <capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page,
+    >();
+
     // Static buffer to use when reading/writing flash for TicKV.
     let page_buffer = static_init!(
-        <Mx25r6435f as kernel::hil::flash::Flash>::Page,
-        <Mx25r6435f as kernel::hil::flash::Flash>::Page::default()
+        <capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page,
+        <capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        > as kernel::hil::flash::Flash>::Page::default()
     );
 
     // SipHash for creating TicKV hashed keys.
@@ -747,32 +823,100 @@ pub unsafe fn main() {
         page_buffer,
     )
     .finalize(components::tickv_dedicated_flash_component_static!(
-        Mx25r6435f,
-        Siphasher24,
+        capsules_extra::mx25r6435f::MX25R6435F<
+            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                'static,
+                nrf52840::spi::SPIM,
+            >,
+            nrf52840::gpio::GPIOPin,
+            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+        >,
+        capsules_extra::sip_hash::SipHasher24,
         TICKV_PAGE_SIZE,
     ));
 
     // KVSystem interface to KV (built on TicKV).
     let tickv_kv_store = components::kv::TicKVKVStoreComponent::new(tickv).finalize(
         components::tickv_kv_store_component_static!(
-            TicKVDedicatedFlash,
+            capsules_extra::tickv::TicKVSystem<
+                capsules_extra::mx25r6435f::MX25R6435F<
+                    capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                        'static,
+                        nrf52840::spi::SPIM,
+                    >,
+                    nrf52840::gpio::GPIOPin,
+                    VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                >,
+                capsules_extra::sip_hash::SipHasher24<'static>,
+                TICKV_PAGE_SIZE,
+            >,
             capsules_extra::tickv::TicKVKeyType,
         ),
     );
 
     let kv_store_permissions = components::kv::KVStorePermissionsComponent::new(tickv_kv_store)
         .finalize(components::kv_store_permissions_component_static!(
-            TicKVKVStore
+            capsules_extra::tickv_kv_store::TicKVKVStore<
+                capsules_extra::tickv::TicKVSystem<
+                    capsules_extra::mx25r6435f::MX25R6435F<
+                        capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                            'static,
+                            nrf52840::spi::SPIM,
+                        >,
+                        nrf52840::gpio::GPIOPin,
+                        VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                    >,
+                    capsules_extra::sip_hash::SipHasher24<'static>,
+                    TICKV_PAGE_SIZE,
+                >,
+                capsules_extra::tickv::TicKVKeyType,
+            >
         ));
 
     // Share the KV stack with a mux.
     let mux_kv = components::kv::KVPermissionsMuxComponent::new(kv_store_permissions).finalize(
-        components::kv_permissions_mux_component_static!(KVStorePermissions),
+        components::kv_permissions_mux_component_static!(
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >
+        ),
     );
 
     // Create a virtual component for the userspace driver.
     let virtual_kv_driver = components::kv::VirtualKVPermissionsComponent::new(mux_kv).finalize(
-        components::virtual_kv_permissions_component_static!(KVStorePermissions),
+        components::virtual_kv_permissions_component_static!(
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >
+        ),
     );
 
     // Userspace driver for KV.
@@ -782,7 +926,25 @@ pub unsafe fn main() {
         capsules_extra::kv_driver::DRIVER_NUM,
     )
     .finalize(components::kv_driver_component_static!(
-        VirtualKVPermissions
+        capsules_extra::virtual_kv::VirtualKVPermissions<
+            capsules_extra::kv_store_permissions::KVStorePermissions<
+                capsules_extra::tickv_kv_store::TicKVKVStore<
+                    capsules_extra::tickv::TicKVSystem<
+                        capsules_extra::mx25r6435f::MX25R6435F<
+                            capsules_core::virtualizers::virtual_spi::VirtualSpiMasterDevice<
+                                'static,
+                                nrf52840::spi::SPIM,
+                            >,
+                            nrf52840::gpio::GPIOPin,
+                            VirtualMuxAlarm<'static, nrf52840::rtc::Rtc>,
+                        >,
+                        capsules_extra::sip_hash::SipHasher24<'static>,
+                        TICKV_PAGE_SIZE,
+                    >,
+                    capsules_extra::tickv::TicKVKeyType,
+                >,
+            >,
+        >
     ));
 
     //--------------------------------------------------------------------------
@@ -868,19 +1030,19 @@ pub unsafe fn main() {
     // ctap.enable();
     // ctap.attach();
 
-    // // Keyboard HID Example
-    // type UsbHw = nrf52840::usbd::Usbd<'static>;
-    // let usb_device = &nrf52840_peripherals.usbd;
-
+    // Keyboard HID Example
+    //
     // let (keyboard_hid, keyboard_hid_driver) = components::keyboard_hid::KeyboardHidComponent::new(
     //     board_kernel,
     //     capsules_core::driver::NUM::KeyboardHid as usize,
-    //     usb_device,
+    //     &nrf52840_peripherals.usbd,
     //     0x1915, // Nordic Semiconductor
     //     0x503a,
     //     strings,
     // )
-    // .finalize(components::keyboard_hid_component_static!(UsbHw));
+    // .finalize(components::keyboard_hid_component_static!(
+    //     nrf52840::usbd::Usbd
+    // ));
 
     // keyboard_hid.enable();
     // keyboard_hid.attach();
@@ -905,7 +1067,6 @@ pub unsafe fn main() {
         temp,
         alarm,
         analog_comparator,
-        thread_driver,
         udp_driver,
         ipc: kernel::ipc::IPC::new(
             board_kernel,

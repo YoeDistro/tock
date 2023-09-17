@@ -31,6 +31,7 @@ use kernel::hil::radio;
 #[allow(unused_imports)]
 use kernel::hil::radio::{RadioConfig, RadioData};
 use kernel::hil::symmetric_encryption::AES128;
+use kernel::platform::chip::Chip;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::process_checker::basic::AppCheckerSha256;
 use kernel::scheduler::round_robin::RoundRobinSched;
@@ -43,6 +44,7 @@ use kernel::{create_capability, debug, debug_gpio, static_buf, static_init};
 use sam4l::chip::Sam4lDefaultPeripherals;
 
 use capsules_extra::sha256::Sha256Software;
+use capsules_extra::nonvolatile_storage_driver;
 
 use components::alarm::{AlarmDriverComponent, AlarmMuxComponent};
 use components::console::{ConsoleOrderedComponent, UartMuxComponent};
@@ -91,7 +93,7 @@ const NUM_PROCS: usize = 4;
 const RADIO_CHANNEL: u8 = 26;
 const DST_MAC_ADDR: MacAddress = MacAddress::Short(49138);
 const DEFAULT_CTX_PREFIX_LEN: u8 = 8; //Length of context for 6LoWPAN compression
-const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0_u8; 16]; //Context for 6LoWPAN Compression
+const DEFAULT_CTX_PREFIX: [u8; 16] = [0x0 as u8; 16]; //Context for 6LoWPAN Compression
 const PAN_ID: u16 = 0xABCD;
 
 // how should the kernel respond when a process faults
@@ -103,36 +105,37 @@ static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS]
 static mut CHIP: Option<&'static sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
+//This variable is used to save initial value of unused sram start address before launching OTA_app
+static mut UNUSED_RAM_START_ADDR_INIT_VAL: usize = 0;
+//This variable is used to save process index loaded by tockloader, which will be used in loading app by OTA_app
+static mut PROCESS_INDEX_INIT_VAL: usize = 0;
+//This arrays is used to save start address and length of process, which will be used in checking overlap region between a new app and already loaded apps
+static mut PROCESSES_REGION_START_ADDRESS: [usize; NUM_PROCS] = [0, 0, 0, 0];
+static mut PROCESSES_REGION_SIZE: [usize; NUM_PROCS] = [0, 0, 0, 0]; 
+
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
 #[link_section = ".stack_buffer"]
 pub static mut STACK_MEMORY: [u8; 0x2000] = [0; 0x2000];
 
-type SI7021Sensor = components::si7021::SI7021ComponentType<
-    capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>,
-    capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, sam4l::i2c::I2CHw<'static>>,
->;
-type TemperatureDriver = components::temperature::TemperatureComponentType<SI7021Sensor>;
-type HumidityDriver = components::humidity::HumidityComponentType<SI7021Sensor>;
-
-struct Imix {
-    pconsole: &'static capsules_core::process_console::ProcessConsole<
-        'static,
-        { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
-        capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<
-            'static,
-            sam4l::ast::Ast<'static>,
-        >,
-        components::process_console::Capability,
-    >,
+struct Imix <C: 'static + Chip> {
+    // pconsole: &'static capsules_core::process_console::ProcessConsole<
+    //     'static,
+    //     { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
+    //     capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<
+    //         'static,
+    //         sam4l::ast::Ast<'static>,
+    //     >,
+    //     components::process_console::Capability,
+    // >,
     console: &'static capsules_core::console_ordered::ConsoleOrdered<
         'static,
         VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>,
     >,
     gpio: &'static capsules_core::gpio::GPIO<'static, sam4l::gpio::GPIOPin<'static>>,
     alarm: &'static AlarmDriver<'static, VirtualMuxAlarm<'static, sam4l::ast::Ast<'static>>>,
-    temp: &'static TemperatureDriver,
-    humidity: &'static HumidityDriver,
+    temp: &'static capsules_extra::temperature::TemperatureSensor<'static>,
+    humidity: &'static capsules_extra::humidity::HumiditySensor<'static>,
     ambient_light: &'static capsules_extra::ambient_light::AmbientLight<'static>,
     adc: &'static capsules_core::adc::AdcDedicated<'static, sam4l::adc::Adc<'static>>,
     led: &'static capsules_core::led::LedDriver<
@@ -164,6 +167,7 @@ struct Imix {
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
     credentials_checking_policy: &'static (),
+    process_loader: kernel::process_load_utilities::ProcessLoader<C>,
     //credentials_checking_policy: &'static AppCheckerSha256,
 }
 
@@ -181,13 +185,13 @@ static mut RF233_REG_WRITE: [u8; 2] = [0x00; 2];
 static mut RF233_REG_READ: [u8; 2] = [0x00; 2];
 static mut SHA256_CHECKER_BUF: [u8; 32] = [0; 32];
 
-impl SyscallDriverLookup for Imix {
+impl <C: 'static + Chip> SyscallDriverLookup for Imix <C> {
     fn with_driver<F, R>(&self, driver_num: usize, f: F) -> R
     where
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
     {
         match driver_num {
-            capsules_core::console_ordered::DRIVER_NUM => f(Some(self.console)),
+            // capsules_core::console_ordered::DRIVER_NUM => f(Some(self.console)),
             capsules_core::gpio::DRIVER_NUM => f(Some(self.gpio)),
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::spi_controller::DRIVER_NUM => f(Some(self.spi)),
@@ -203,17 +207,19 @@ impl SyscallDriverLookup for Imix {
             capsules_extra::usb::usb_user::DRIVER_NUM => f(Some(self.usb_driver)),
             capsules_extra::net::udp::DRIVER_NUM => f(Some(self.udp_driver)),
             capsules_extra::nrf51822_serialization::DRIVER_NUM => f(Some(self.nrf51822)),
-            capsules_extra::nonvolatile_storage_driver::DRIVER_NUM => {
+            nonvolatile_storage_driver::DRIVER_NUM => {
                 f(Some(self.nonvolatile_storage))
             }
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
+            // nonvolatile_storage_driver::DRIVER_NUM => f(Some(self.nonvolatile_storage)),
+            kernel::process_load_utilities::DRIVER_NUM => f(Some(&self.process_loader)),
             _ => f(None),
         }
     }
 }
 
-impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix {
+impl <C: 'static + Chip> KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix <C> {
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
@@ -338,6 +344,7 @@ pub unsafe fn main() {
     sam4l::init();
     let pm = static_init!(sam4l::pm::PowerManager, sam4l::pm::PowerManager::new());
     let peripherals = create_peripherals(pm);
+    // let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&PROCESSES));
 
     pm.setup_system_clock(
         sam4l::pm::SystemClockSource::PllExternalOscillatorAt48MHz {
@@ -364,18 +371,7 @@ pub unsafe fn main() {
     let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
     let main_cap = create_capability!(capabilities::MainLoopCapability);
     let grant_cap = create_capability!(capabilities::MemoryAllocationCapability);
-
-    power::configure_submodules(
-        &peripherals.pa,
-        &peripherals.pb,
-        &peripherals.pc,
-        power::SubmoduleConfig {
-            rf233: true,
-            nrf51422: true,
-            sensors: true,
-            trng: true,
-        },
-    );
+    let memory_allocation_capability = create_capability!(capabilities::MemoryAllocationCapability);
 
     let sha = static_init!(Sha256Software<'static>, Sha256Software::new());
     kernel::deferred_call::DeferredCallClient::register(sha);
@@ -388,9 +384,9 @@ pub unsafe fn main() {
 
     let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&PROCESSES));
 
-    let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
-        .finalize(components::process_printer_text_component_static!());
-    PROCESS_PRINTER = Some(process_printer);
+    // let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
+    //     .finalize(components::process_printer_text_component_static!());
+    // PROCESS_PRINTER = Some(process_printer);
 
     // # CONSOLE
     // Create a shared UART channel for the consoles and for kernel debug.
@@ -407,16 +403,16 @@ pub unsafe fn main() {
         AlarmDriverComponent::new(board_kernel, capsules_core::alarm::DRIVER_NUM, mux_alarm)
             .finalize(components::alarm_component_static!(sam4l::ast::Ast));
 
-    let pconsole = ProcessConsoleComponent::new(
-        board_kernel,
-        uart_mux,
-        mux_alarm,
-        process_printer,
-        Some(cortexm4::support::reset),
-    )
-    .finalize(components::process_console_component_static!(
-        sam4l::ast::Ast
-    ));
+    // let pconsole = ProcessConsoleComponent::new(
+    //     board_kernel,
+    //     uart_mux,
+    //     mux_alarm,
+    //     process_printer,
+    //     Some(cortexm4::support::reset),
+    // )
+    // .finalize(components::process_console_component_static!(
+    //     sam4l::ast::Ast
+    // ));
 
     let console = ConsoleOrderedComponent::new(
         board_kernel,
@@ -468,13 +464,13 @@ pub unsafe fn main() {
         capsules_extra::temperature::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::temperature_component_static!(SI7021Sensor));
+    .finalize(components::temperature_component_static!());
     let humidity = components::humidity::HumidityComponent::new(
         board_kernel,
         capsules_extra::humidity::DRIVER_NUM,
         si7021,
     )
-    .finalize(components::humidity_component_static!(SI7021Sensor));
+    .finalize(components::humidity_component_static!());
 
     let fxos8700 = components::fxos8700::Fxos8700Component::new(mux_i2c, 0x1e, &peripherals.pc[13])
         .finalize(components::fxos8700_component_static!(
@@ -515,6 +511,33 @@ pub unsafe fn main() {
     .finalize(components::rf233_component_static!(
         sam4l::spi::SpiHw<'static>
     ));
+
+    let process_loader = kernel::process::ProcessLoader::init(
+        board_kernel,
+        chip,
+        &FAULT_RESPONSE,
+        &memory_allocation_capability,
+        PROCESSES.as_mut_ptr(),
+        PROCESSES_REGION_START_ADDRESS.as_mut_ptr(),
+        PROCESSES_REGION_SIZE.as_mut_ptr(),
+        NUM_PROCS,
+        &_sapps as *const u8 as usize,
+        &_eapps as *const u8 as usize,
+        &_eappmem as *const u8 as usize,
+        &UNUSED_RAM_START_ADDR_INIT_VAL,
+        &PROCESS_INDEX_INIT_VAL,
+    );
+    power::configure_submodules(
+        &peripherals.pa,
+        &peripherals.pb,
+        &peripherals.pc,
+        power::SubmoduleConfig {
+            rf233: true,
+            nrf51422: true,
+            sensors: true,
+            trng: true,
+        },
+    );
 
     // Setup ADC
     let adc_channels = static_init!(
@@ -722,7 +745,7 @@ pub unsafe fn main() {
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
     let imix = Imix {
-        pconsole,
+        // pconsole,
         console,
         alarm,
         gpio,
@@ -742,6 +765,7 @@ pub unsafe fn main() {
         usb_driver,
         nrf51822: nrf_serialization,
         nonvolatile_storage,
+        process_loader,
         scheduler,
         systick: cortexm4::systick::SysTick::new(),
         //credentials_checking_policy: checker,
@@ -756,7 +780,7 @@ pub unsafe fn main() {
     let _ = rf233.reset();
     let _ = rf233.start();
 
-    let _ = imix.pconsole.start();
+    // let _ = imix.pconsole.start();
 
     // Optional kernel tests. Note that these might conflict
     // with normal operation (e.g., steal callbacks from drivers, etc.),
