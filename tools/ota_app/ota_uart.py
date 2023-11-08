@@ -145,7 +145,7 @@ class cls_ota_serial:
     def fn_ota_serial_config_set(self, sp):
         # Open the actual serial port
 
-        sp.port = '/dev/ttyS4'
+        sp.port = '/dev/ttyUSB0'
         sp.baudrate = 115200
         sp.parity=serial.PARITY_NONE
         sp.stopbits=1
@@ -164,7 +164,8 @@ class cls_ota_serial:
                 break
             except:
                 print("retrying open serial port for UART")
-                
+        
+        print("opened serial port successfully")
         time.sleep(0.05)
         
         #Flush buffers
@@ -181,37 +182,45 @@ class cls_ota_serial:
         #We use 517 bytes data packet size
         #1 byte (command) + 4 bytes (Optional) + 512 byte (binary data)
         if self.state == enState.enInit:
-            #1 byte command
+            #1 byte command'
+            print("Command: {}".format(self.COMMAND_FIND_STADDR))
+            # data_packet = self.COMMAND_FIND_STADDR.to_bytes(1, 'little')
+            # print("data packet little endian: {}".format(data_packet))
             data_packet = self.COMMAND_FIND_STADDR.to_bytes(1, 'big')
-            
+            print("data packet: {}".format(data_packet))
             #4 bytes application size (send by little endian. Need to convert, when receive data at OTA app)
             self.app_size = binary_all[4:8]
             data_packet += self.app_size
             
+            print("data packet: {}".format(data_packet))
             #convert to bytearray
             data_packet = bytearray(data_packet)
-            
+            print("data packet: {}".format(data_packet))
             #512 bytes dummy 
             for i in range(self.page_size):
                 data_packet.append(self.INVALID_BYTE)
-            
+            print("data packet: {}".format(data_packet))
             #write data to OTA via UART
             sp.write(data_packet)
+            print("done writing packet. Now reading")
                 
             #read data from OTA via UART
             data_in = sp.readline().decode("utf-8")
+            print(data_in)
             #Issue 1
             #data_in = data_in[:self.rsp_size]
             #print(data_in)
             
             if data_in == self.RESPONSE_FIND_STADDR_OK:
-                #print("Success: Init Pass!")
+                print("Success: Init Pass!")
                 self.state = enState.enWrite 
                 
             elif data_in == self.RESPONSE_FIND_STADDR_FAIL:
+                print("RESPONSE_FIND_STADDR_FAIL!")
                 self.state = enState.enInitFail  
                 
             else:
+                print("init fail")
                 self.state = enState.enFail
                 print("Message from tock => " + data_in)
                                    
@@ -258,6 +267,7 @@ class cls_ota_serial:
                 self.state = enState.enWriteFail
                 
             else:
+                print("write fail")
                 self.state = enState.enFail 
                 print("Message from tock => " + data_in)                
         
@@ -293,6 +303,7 @@ class cls_ota_serial:
                 self.state = enState.enWritePadBoundFail
                 
             else:
+                print("write padding fail")
                 self.state = enState.enFail 
                 print("Message from tock => " + data_in) 
                 
@@ -335,6 +346,7 @@ class cls_ota_serial:
                 self.state = enState.enCrcFail
                 
             else:
+                print("crc fail")
                 self.state = enState.enFail 
                 print("Message from tock => " + data_in)
                     
@@ -343,7 +355,7 @@ class cls_ota_serial:
             data_packet = self.COMMAND_APP_LOAD.to_bytes(1, 'big')
             
             #4 bytes optional byte(page counter)
-            data_packet += self.OPTION_BYTE_DUMMY.to_bytes(4, 'big')
+            data_packet += self.OPTION_BYTE_DUMMY.to_bytes(4, 'little')
             
             #convert to bytearray 
             data_packet = bytearray(data_packet)
@@ -369,6 +381,7 @@ class cls_ota_serial:
                 self.state = enState.enAppLoadFail
                 
             else:
+                print("app load fail")
                 self.state = enState.enAppLoadFail
                 print("Message from tock => " + data_in)
 
@@ -402,6 +415,7 @@ class cls_ota_serial:
                 self.state = enState.enAppEraseFail  
                 
             else:
+                print("app erase fail")
                 self.state = enState.enFail 
                 print("Message from tock => " + data_in)
     
@@ -441,6 +455,7 @@ class cls_ota_serial:
                 self.state = enState.enWritePadAppsFail
                 
             else:
+                print("write pad apps fail")
                 self.state = enState.enFail 
                 print("Message from tock => " + data_in)   
                 
@@ -528,7 +543,7 @@ def main(file_name):
             break
         
         elif ob_ota.state == enState.enFail:
-            print("OTA Failure: Serial Error! \nYou may disable process_printer and _process_console.start() at main.rs!")
+            print("OTA Failure: Internal Error! Try disabling process_printer and _process_console.start() at main.rs!")
             break
         
         pbar.update(1) 

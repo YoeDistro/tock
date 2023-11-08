@@ -67,6 +67,7 @@ use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::{ErrorCode, ProcessId};
+// use kernel::debug;
 
 /// Syscall driver number.
 use capsules_core::driver;
@@ -170,6 +171,13 @@ pub struct NonvolatileStorage<'a> {
     kernel_readwrite_length: Cell<usize>,
     // Where to read/write from the kernel request.
     kernel_readwrite_address: Cell<usize>,
+
+    // Supported number of process
+    supported_process_num: usize,
+    // Start address of a process loaded
+    process_region_start_address: &'static [usize],
+    // Size of a process loaded
+    process_region_size: &'static [usize],
 }
 
 impl<'a> NonvolatileStorage<'a> {
@@ -186,6 +194,9 @@ impl<'a> NonvolatileStorage<'a> {
         kernel_start_address: usize,
         kernel_length: usize,
         buffer: &'static mut [u8],
+        supported_process_num: usize,
+        process_region_start_address: &'static [usize],
+        process_region_size: &'static [usize],
     ) -> NonvolatileStorage<'a> {
         NonvolatileStorage {
             driver: driver,
@@ -202,6 +213,9 @@ impl<'a> NonvolatileStorage<'a> {
             kernel_buffer: TakeCell::empty(),
             kernel_readwrite_length: Cell::new(0),
             kernel_readwrite_address: Cell::new(0),
+            supported_process_num: supported_process_num,
+            process_region_start_address: process_region_start_address,
+            process_region_size: process_region_size,
         }
     }
 
@@ -435,6 +449,39 @@ impl<'a> NonvolatileStorage<'a> {
             }
         }
     }
+
+    fn check_offset_is_in_processes(
+        &self,
+        offset: usize,
+    ) -> Result<(), ErrorCode> {
+
+        // debug!("offset: {}", offset);
+
+        let mut index = 0;
+
+        while index < self.supported_process_num
+        {
+            //We only refer to the two arrays
+            let process_start_address =  self.process_region_start_address[index];
+            let process_end_address = self.process_region_start_address[index] + self.process_region_size[index];
+            // debug!("Process start address: {}, process end address: {}", process_start_address, process_end_address);
+
+            let target = self.userspace_start_address + offset;
+            // debug!("userspace address: {}", self.userspace_start_address);
+            // debug!("target address: {}", target);
+
+            if target >= process_start_address && target < process_end_address
+            {
+                return Err(ErrorCode::INVAL);
+            }
+
+            index += 1;
+
+            // debug!("Index: {}", index);
+        }
+
+        return Ok(());
+    }
 }
 
 /// This is the callback client for the underlying physical storage driver.
@@ -578,15 +625,38 @@ impl SyscallDriver for NonvolatileStorage<'_> {
 
             3 => {
                 // Issue a write command
-                let res = self.enqueue_command(
-                    NonvolatileCommand::UserspaceWrite,
-                    offset,
-                    length,
-                    Some(processid),
-                );
+                //     let res = self.enqueue_command(
+                //         NonvolatileCommand::UserspaceWrite,
+                //         offset,
+                //         length,
+                //         Some(processid),
+                //     );
 
-                match res {
-                    Ok(()) => CommandReturn::success(),
+                //     match res {
+                //         Ok(()) => CommandReturn::success(),
+                //         Err(e) => CommandReturn::failure(e),
+                //     }
+                // }
+
+                let offset_validity = self.check_offset_is_in_processes(offset);
+                // debug!("offset: {}, length: {}, pid: {:?}", offset, length, processid);
+                // debug!("Offset validity: {:?}",offset_validity);
+                match offset_validity {
+                    Ok(()) => {
+                        let res =
+                            self.enqueue_command(
+                                NonvolatileCommand::UserspaceWrite,
+                                offset,
+                                length,
+                                Some(processid),
+                            );
+                            // debug!("write command result: {:?}",res);
+
+                        match res {
+                            Ok(()) => CommandReturn::success(),
+                            Err(e) => CommandReturn::failure(e),
+                        }
+                    }
                     Err(e) => CommandReturn::failure(e),
                 }
             }
