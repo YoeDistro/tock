@@ -136,6 +136,7 @@ pub struct Platform {
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     alarm: &'static AlarmDriver,
     button: &'static capsules_core::button::Button<'static, nrf52840::gpio::GPIOPin<'static>>,
+    screen: &'static capsules_extra::screen::Screen<'static>,
     udp_driver: &'static capsules_extra::net::udp::UDPDriver<'static>,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
@@ -154,6 +155,7 @@ impl SyscallDriverLookup for Platform {
             capsules_core::button::DRIVER_NUM => f(Some(self.button)),
             capsules_core::adc::DRIVER_NUM => f(Some(self.adc)),
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
+            capsules_extra::screen::DRIVER_NUM => f(Some(self.screen)),
             capsules_extra::ble_advertising_driver::DRIVER_NUM => f(Some(self.ble_radio)),
             capsules_extra::ieee802154::DRIVER_NUM => f(Some(self.ieee802154_radio)),
             capsules_extra::net::udp::DRIVER_NUM => f(Some(self.udp_driver)),
@@ -464,15 +466,32 @@ pub unsafe fn start() -> (
             ));
 
     //--------------------------------------------------------------------------
-    // SENSORS
+    // SCREEN
     //--------------------------------------------------------------------------
 
-    let sensors_i2c_bus = components::i2c::I2CMuxComponent::new(&base_peripherals.twi0, None)
+    let i2c_bus = components::i2c::I2CMuxComponent::new(&base_peripherals.twi0, None)
         .finalize(components::i2c_mux_component_static!(nrf52840::i2c::TWI));
     base_peripherals.twi0.configure(
         nrf52840::pinmux::Pinmux::new(I2C_SCL_PIN as u32),
         nrf52840::pinmux::Pinmux::new(I2C_SDA_PIN as u32),
     );
+
+    // I2C address is b011110X, and on this board D/C̅ is GND.
+    let ssd1306_i2c = components::i2c::I2CComponent::new(i2c_bus, 0x3c)
+        .finalize(components::i2c_component_static!(nrf52840::i2c::TWI));
+
+    // Create the ssd1306 object for the actual screen driver.
+    let ssd1306 = components::ssd1306::Ssd1306Component::new(ssd1306_i2c, true)
+        .finalize(components::ssd1306_component_static!(nrf52840::i2c::TWI));
+
+    // Create a Driver for userspace access to the screen.
+    let screen = components::screen::ScreenComponent::new(
+        board_kernel,
+        capsules_extra::screen::DRIVER_NUM,
+        ssd1306,
+        Some(ssd1306),
+    )
+    .finalize(components::screen_component_static!(1032));
 
     //--------------------------------------------------------------------------
     // WIRELESS
@@ -573,6 +592,7 @@ pub unsafe fn start() -> (
         button,
         gpio,
         rng,
+        screen,
         alarm,
         udp_driver,
         ipc: kernel::ipc::IPC::new(
@@ -608,6 +628,8 @@ pub unsafe fn start() -> (
 
     debug!("Initialization complete. Entering main loop.");
     let _ = platform.pconsole.start();
+
+    ssd1306.init_screen();
 
     //--------------------------------------------------------------------------
     // PROCESSES AND MAIN LOOP
