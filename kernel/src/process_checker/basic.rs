@@ -197,7 +197,11 @@ impl AppUniqueness for AppCheckerUniqueNamesIncrementingIds<'_> {
 }
 
 impl Compress for AppCheckerUniqueNamesIncrementingIds<'_> {
-    fn to_short_id(&self, _credentials: &TbfFooterV2Credentials) -> ShortID {
+    fn to_short_id(
+        &self,
+        _process: &dyn Process,
+        _credentials: &TbfFooterV2Credentials,
+    ) -> ShortID {
         let short_id = ShortID::Fixed(NonZeroU32::new(self.counter.get() as u32).unwrap());
         self.counter.increment();
         short_id
