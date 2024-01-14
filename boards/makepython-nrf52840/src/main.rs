@@ -107,7 +107,7 @@ type AlarmDriver = components::alarm::AlarmDriverComponentType<nrf52840::rtc::Rt
 type Screen = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
 type ScreenDriver = components::screen::ScreenSharedComponentType<Screen>;
 
-type Checker = kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds<'static>;
+type Checker = kernel::process_checker::basic::AppCheckerNames<'static>;
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -503,21 +503,32 @@ pub unsafe fn start() -> (
         [capsules_extra::screen_shared::AppScreenRegion; 3],
         [
             capsules_extra::screen_shared::AppScreenRegion::new(
-                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(1).unwrap()),
+                kernel::process::ShortID::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::addhash_str("circle"))
+                        .unwrap()
+                ),
                 0 * 8, // x
                 0 * 8, // y
                 8 * 8, // width
                 8 * 8  // height
             ),
             capsules_extra::screen_shared::AppScreenRegion::new(
-                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(2).unwrap()),
+                kernel::process::ShortID::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::addhash_str("count"))
+                        .unwrap()
+                ),
                 8 * 8, // x
                 0 * 8, // y
                 8 * 8, // width
                 4 * 8  // height
             ),
             capsules_extra::screen_shared::AppScreenRegion::new(
-                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(3).unwrap()),
+                kernel::process::ShortID::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::addhash_str(
+                        "tock-scroll"
+                    ))
+                    .unwrap()
+                ),
                 8 * 8, // x
                 4 * 8, // y
                 8 * 8, // width
@@ -617,8 +628,8 @@ pub unsafe fn start() -> (
     //--------------------------------------------------------------------------
 
     let checker = static_init!(
-        kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds,
-        kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds::new()
+        kernel::process_checker::basic::AppCheckerNames,
+        kernel::process_checker::basic::AppCheckerNames::new()
     );
     kernel::deferred_call::DeferredCallClient::register(checker);
 
