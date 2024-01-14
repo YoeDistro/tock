@@ -104,6 +104,11 @@ fn baud_rate_reset_bootloader_enter() {
 
 type AlarmDriver = components::alarm::AlarmDriverComponentType<nrf52840::rtc::Rtc<'static>>;
 
+type Screen = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
+type ScreenDriver = components::screen::ScreenSharedComponentType<Screen>;
+
+type Checker = kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds<'static>;
+
 /// Supported drivers by the platform
 pub struct Platform {
     ble_radio: &'static capsules_extra::ble_advertising_driver::BLE<
@@ -136,9 +141,10 @@ pub struct Platform {
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     alarm: &'static AlarmDriver,
     button: &'static capsules_core::button::Button<'static, nrf52840::gpio::GPIOPin<'static>>,
-    screen: &'static capsules_extra::screen::Screen<'static>,
+    screen: &'static ScreenDriver,
     udp_driver: &'static capsules_extra::net::udp::UDPDriver<'static>,
     scheduler: &'static RoundRobinSched<'static>,
+    checker: &'static Checker,
     systick: cortexm4::systick::SysTick,
 }
 
@@ -171,7 +177,7 @@ impl KernelResources<nrf52::chip::NRF52<'static, Nrf52840DefaultPeripherals<'sta
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
-    type CredentialsCheckingPolicy = ();
+    type CredentialsCheckingPolicy = Checker;
     type Scheduler = RoundRobinSched<'static>;
     type SchedulerTimer = cortexm4::systick::SysTick;
     type WatchDog = ();
@@ -187,7 +193,7 @@ impl KernelResources<nrf52::chip::NRF52<'static, Nrf52840DefaultPeripherals<'sta
         &()
     }
     fn credentials_checking_policy(&self) -> &'static Self::CredentialsCheckingPolicy {
-        &()
+        self.checker
     }
     fn scheduler(&self) -> &Self::Scheduler {
         self.scheduler
@@ -485,13 +491,48 @@ pub unsafe fn start() -> (
         .finalize(components::ssd1306_component_static!(nrf52840::i2c::TWI));
 
     // Create a Driver for userspace access to the screen.
-    let screen = components::screen::ScreenComponent::new(
+    // let screen = components::screen::ScreenComponent::new(
+    //     board_kernel,
+    //     capsules_extra::screen::DRIVER_NUM,
+    //     ssd1306,
+    //     Some(ssd1306),
+    // )
+    // .finalize(components::screen_component_static!(1032));
+
+    let apps_regions = static_init!(
+        [capsules_extra::screen_shared::AppScreenRegion; 3],
+        [
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(1).unwrap()),
+                0 * 8, // x
+                0 * 8, // y
+                8 * 8, // width
+                8 * 8  // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(2).unwrap()),
+                8 * 8, // x
+                0 * 8, // y
+                8 * 8, // width
+                4 * 8  // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(3).unwrap()),
+                8 * 8, // x
+                4 * 8, // y
+                8 * 8, // width
+                4 * 8  // height
+            )
+        ]
+    );
+
+    let screen = components::screen::ScreenSharedComponent::new(
         board_kernel,
         capsules_extra::screen::DRIVER_NUM,
         ssd1306,
-        Some(ssd1306),
+        apps_regions,
     )
-    .finalize(components::screen_component_static!(1032));
+    .finalize(components::screen_shared_component_static!(1032, Screen));
 
     //--------------------------------------------------------------------------
     // WIRELESS
@@ -572,6 +613,16 @@ pub unsafe fn start() -> (
     .finalize(components::udp_driver_component_static!(nrf52840::rtc::Rtc));
 
     //--------------------------------------------------------------------------
+    // APP ID CHECKING
+    //--------------------------------------------------------------------------
+
+    let checker = static_init!(
+        kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds,
+        kernel::process_checker::basic::AppCheckerUniqueNamesIncrementingIds::new()
+    );
+    kernel::deferred_call::DeferredCallClient::register(checker);
+
+    //--------------------------------------------------------------------------
     // FINAL SETUP AND BOARD BOOT
     //--------------------------------------------------------------------------
 
@@ -601,6 +652,7 @@ pub unsafe fn start() -> (
             &memory_allocation_capability,
         ),
         scheduler,
+        checker,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };
 
@@ -647,8 +699,9 @@ pub unsafe fn start() -> (
         static _eappmem: u8;
     }
 
-    kernel::process::load_processes(
+    kernel::process::load_and_check_processes(
         board_kernel,
+        &platform,
         chip,
         core::slice::from_raw_parts(
             &_sapps as *const u8,
