@@ -72,6 +72,7 @@ pub mod proximity;
 pub mod public_key_crypto;
 pub mod pwm;
 pub mod read_only_state;
+pub mod restrict_resource;
 pub mod rf233;
 pub mod rf233_const;
 pub mod screen;
