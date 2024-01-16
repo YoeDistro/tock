@@ -1372,14 +1372,21 @@ pub struct ProcessCheckerMachine {
     approve_cap: KernelProcessApprovalCapability,
 }
 
+/// Result after trying to check a footer entry.
 #[derive(Debug)]
 enum FooterCheckResult {
-    Checking,           // A check has started
-    PastLastFooter,     // There are no more footers, no check started
-    FooterNotCheckable, // The footer isn't a credential, no check started
-    BadFooter,          // The footer is invalid, no check started
-    NoProcess,          // No process was provided, no check started
-    Error,              // An internal error occurred, no check started
+    /// A check has started.
+    Checking,
+    /// There are no more footers, no check started.
+    PastLastFooter,
+    /// The footer isn't a credential, no check started .
+    FooterNotCheckable,
+    /// The footer is invalid, no check started.
+    BadFooter,
+    /// No process was provided, no check started.
+    NoProcess,
+    /// An internal error occurred, no check started.
+    Error,
 }
 
 impl ProcessCheckerMachine {
@@ -1499,28 +1506,24 @@ fn check_footer(
             next_footer
         );
     }
-    let footers_position_ptr = process.get_addresses().flash_integrity_end;
-    let mut footers_position = footers_position_ptr as usize;
-
-    let flash_start_ptr = process.get_addresses().flash_start as *const u8;
-    let flash_start = flash_start_ptr as usize;
-    let flash_integrity_len = footers_position - flash_start;
-    let flash_end = process.get_addresses().flash_end;
-    let footers_len = flash_end - footers_position;
 
     if config::CONFIG.debug_process_credentials {
+        let footers_start = process.get_addresses().flash_integrity_end;
+        let flash_start = process.get_addresses().flash_start;
+        let flash_integrity_len = footers_start - flash_start;
+        let flash_end = process.get_addresses().flash_end;
         debug!(
             "Checking: Integrity region is {:x}-{:x}; footers at {:x}-{:x}",
             flash_start,
             flash_start + flash_integrity_len,
-            footers_position,
+            footers_start,
             flash_end
         );
     }
     let mut current_footer = 0;
-    let mut footer_slice = unsafe { slice::from_raw_parts(footers_position_ptr, footers_len) };
-    let binary_slice = unsafe { slice::from_raw_parts(flash_start_ptr, flash_integrity_len) };
-    while current_footer <= next_footer && footers_position < flash_end {
+    let mut footer_slice = process.get_footer();
+    let binary_slice = process.get_integrity_binary();
+    while footer_slice.len() > 0 {
         let parse_result = tock_tbf::parse::parse_tbf_footer(footer_slice);
         match parse_result {
             Err(TbfParseError::NotEnoughFlash) => {
@@ -1542,19 +1545,22 @@ fn check_footer(
                 return FooterCheckResult::BadFooter;
             }
             Ok((footer, len)) => {
-                let slice_result = footer_slice.get(len as usize + 4..);
                 if config::CONFIG.debug_process_credentials {
                     debug!(
                         "ProcessLoad: @{:x} found a len {} footer: {:?}",
-                        footers_position,
+                        footer_slice.as_ptr() as usize,
                         len,
                         footer.format()
                     );
                 }
-                footers_position = footers_position + len as usize + 4;
-                match slice_result {
+
+                // Skip over the found footer and the TLV header (4 bytes).
+                let footer_remaining = footer_slice.get(len as usize + 4..);
+                match footer_remaining {
                     None => {
-                        return FooterCheckResult::BadFooter;
+                        // If len comes back longer than the buffer, our parsing
+                        // is wrong.
+                        return FooterCheckResult::Error;
                     }
                     Some(slice) => {
                         footer_slice = slice;
