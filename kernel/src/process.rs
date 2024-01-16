@@ -739,6 +739,9 @@ pub trait Process {
     /// switched to.
     fn switch_to(&self) -> Option<syscall::ContextSwitchReason>;
 
+    fn get_footer(&self) -> &'static [u8];
+    fn get_integrity_binary(&self) -> &'static [u8];
+
     /// Return process state information related to the location in memory of
     /// various process data structures.
     fn get_addresses(&self) -> ProcessAddresses;
@@ -1022,10 +1025,10 @@ pub struct ProcessAddresses {
     /// the kernel has reserved for its own use.
     pub flash_non_protected_start: usize,
     /// The address immediately after the end of part of the process binary that
-    /// is covered by integrity; the integrity region is [flash_start -
-    /// flash_integrity_end). Footers are stored in the flash after
-    /// flash_integrity_end.
-    pub flash_integrity_end: *const u8,
+    /// is covered by integrity; the integrity region is `[flash_start -
+    /// flash_integrity_end)`. Footers are stored in the flash after
+    /// `flash_integrity_end`.
+    pub flash_integrity_end: usize,
     /// The address immediately after the end of the region allocated for this
     /// process in nonvolatile memory.
     pub flash_end: usize,
