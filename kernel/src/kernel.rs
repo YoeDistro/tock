@@ -37,7 +37,7 @@ use crate::syscall::{ContextSwitchReason, SyscallReturn};
 use crate::syscall::{Syscall, YieldCall};
 use crate::syscall_driver::CommandReturn;
 use crate::upcall::{Upcall, UpcallId};
-use crate::utilities::cells::{NumericCellExt, OptionalCell};
+use crate::utilities::cells::{MapCell, NumericCellExt, OptionalCell};
 
 use tock_tbf::types::TbfFooterV2Credentials;
 use tock_tbf::types::TbfParseError;
@@ -100,6 +100,10 @@ unsafe impl capabilities::ProcessApprovalCapability for KernelProcessApprovalCap
 
 impl Kernel {
     pub fn new(processes: &'static [Option<&'static dyn process::Process>]) -> Kernel {
+        fn keep_somes(x: &&Option<&'static dyn process::Process>) -> bool {
+            x.is_some()
+        }
+
         Kernel {
             processes,
             process_identifier_max: Cell::new(0),
@@ -111,6 +115,8 @@ impl Kernel {
                 footer: Cell::new(0),
                 policy: OptionalCell::empty(),
                 processes: processes,
+                // process_iter: OptionalCell::empty(),
+                process_iter: MapCell::new(processes.iter().filter(keep_somes)),
                 approve_cap: KernelProcessApprovalCapability {},
             },
         }
@@ -1369,6 +1375,14 @@ pub struct ProcessCheckerMachine {
     footer: Cell<usize>,
     policy: OptionalCell<&'static dyn CredentialsCheckingPolicy<'static>>,
     processes: &'static [Option<&'static dyn Process>],
+    // process_iter: OptionalCell<core::slice::Iter<'static, Option<&'static dyn Process>>>,
+    // process_iter: core::iter::Filter<core::slice::Iter<'static, Option<&'static dyn Process>>, P>,
+    process_iter: MapCell<
+        core::iter::Filter<
+            core::slice::Iter<'static, Option<&'static dyn process::Process>>,
+            fn(&&Option<&'static dyn process::Process>) -> bool,
+        >,
+    >,
     approve_cap: KernelProcessApprovalCapability,
 }
 
@@ -1393,96 +1407,125 @@ impl ProcessCheckerMachine {
     /// Check the next footer of the next process. Returns:
     ///   - Ok(true) if a valid footer was found and is being checked
     ///   - Ok(false) there are no more footers to check
-    ///   - Err(r): an error occured and process verification has to stop.
+    ///   - Err(r): an error occurred and process verification has to stop.
     pub fn next(&self) -> Result<bool, ProcessLoadError> {
         loop {
-            let mut proc_index = self.process.get();
+            // if self.process_iter.is_none() {
+            //     self.process_iter.set(self.processes.iter())
+            // }
 
-            // Find the next process to check. When code completes
-            // checking a process, it just increments to the next
-            // index. In case the array has None entries or the
-            // process array changes under us, don't actually trust
-            // this value.
-            while proc_index < self.processes.len() && self.processes[proc_index].is_none() {
-                proc_index += 1;
-                self.process.set(proc_index);
-                self.footer.set(0);
-            }
-            if proc_index >= self.processes.len() {
-                // No more processes to check.
-                return Ok(false);
-            }
+            // let mut proc_index = self.process.get();
+
+            // // Find the next process to check. When code completes
+            // // checking a process, it just increments to the next
+            // // index. In case the array has None entries or the
+            // // process array changes under us, don't actually trust
+            // // this value.
+            // while proc_index < self.processes.len() && self.processes[proc_index].is_none() {
+            //     proc_index += 1;
+            //     self.process.set(proc_index);
+            //     self.footer.set(0);
+            // }
+            // if proc_index >= self.processes.len() {
+            //     // No more processes to check.
+            //     return Ok(false);
+            // }
 
             let footer_index = self.footer.get();
-            // Try to check the next footer.
-            let check_result = self.policy.map_or(FooterCheckResult::Error, |c| {
-                self.processes[proc_index].map_or(FooterCheckResult::NoProcess, |p| {
-                    check_footer(p, c, footer_index)
-                })
-            });
 
-            if config::CONFIG.debug_process_credentials {
-                debug!(
-                    "Checking: Check status for process {}, footer {}: {:?}",
-                    proc_index, footer_index, check_result
-                );
-            }
-            match check_result {
-                FooterCheckResult::Checking => {
-                    return Ok(true);
-                }
-                FooterCheckResult::PastLastFooter => {
-                    // We reached the end of the footers without any
-                    // credentials or all credentials were Pass: apply
-                    // the checker policy to see if the process
-                    // should be allowed to run.
-                    self.policy.map(|policy| {
-                        let requires = policy.require_credentials();
-                        let _res = self.processes[proc_index].map_or(
-                            Err(ProcessLoadError::InternalError),
-                            |p| {
-                                if requires {
-                                    if config::CONFIG.debug_process_credentials {
-                                        debug!(
-                                            "Checking: required, but all passes, do not run {}",
-                                            p.get_process_name()
-                                        );
+            match self.process_iter.take() {
+                Some(mut pp) => {
+                    match pp.next() {
+                        Some(pi) => match pi {
+                            Some(pr) => {
+                                match self.policy.take() {
+                                    Some(c) => {
+                                        let check_result = check_footer(*pr, c, footer_index);
+
+                                        match check_result {
+                                            FooterCheckResult::Checking => {
+                                                return Ok(true);
+                                            }
+                                            FooterCheckResult::PastLastFooter => {
+                                                // We reached the end of the footers without any
+                                                // credentials or all credentials were Pass: apply
+                                                // the checker policy to see if the process
+                                                // should be allowed to run.
+                                                let requires = c.require_credentials();
+
+                                                if requires {
+                                                    if config::CONFIG.debug_process_credentials {
+                                                        debug!(
+                                                        "Checking: required, but all passes, do not run {}",
+                                                        pr.get_process_name()
+                                                    );
+                                                    }
+                                                    pr.mark_credentials_fail(&self.approve_cap);
+                                                } else {
+                                                    if config::CONFIG.debug_process_credentials {
+                                                        debug!(
+                                                            "Checking: not required, all passes, run {}",
+                                                            pr.get_process_name()
+                                                        );
+                                                    }
+                                                    pr.mark_credentials_pass(
+                                                        None,
+                                                        ShortID::LocallyUnique,
+                                                        &self.approve_cap,
+                                                    )
+                                                    .or(Err(ProcessLoadError::InternalError))?;
+                                                }
+
+                                                self.process.set(self.process.get() + 1);
+                                                self.footer.set(0);
+                                            }
+                                            FooterCheckResult::NoProcess
+                                            | FooterCheckResult::BadFooter => {
+                                                // Go to next process
+                                                self.process.set(self.process.get() + 1);
+                                                self.footer.set(0);
+                                            }
+                                            FooterCheckResult::FooterNotCheckable => {
+                                                // Go to next footer
+                                                self.footer.set(self.footer.get() + 1);
+                                            }
+                                            FooterCheckResult::Error => {
+                                                return Err(ProcessLoadError::InternalError);
+                                            }
+                                        }
                                     }
-                                    p.mark_credentials_fail(&self.approve_cap);
-                                } else {
-                                    if config::CONFIG.debug_process_credentials {
-                                        debug!(
-                                            "Checking: not required, all passes, run {}",
-                                            p.get_process_name()
-                                        );
-                                    }
-                                    p.mark_credentials_pass(
-                                        None,
-                                        ShortID::LocallyUnique,
-                                        &self.approve_cap,
-                                    )
-                                    .or(Err(ProcessLoadError::InternalError))?;
+                                    None => {}
                                 }
-                                Ok(true)
-                            },
-                        );
-                    });
-                    self.process.set(self.process.get() + 1);
-                    self.footer.set(0);
+                            }
+                            None => {
+                                return Ok(false);
+                            }
+                        },
+                        None => {
+                            return Ok(false);
+                        }
+                    }
                 }
-                FooterCheckResult::NoProcess | FooterCheckResult::BadFooter => {
-                    // Go to next process
-                    self.process.set(self.process.get() + 1);
-                    self.footer.set(0)
-                }
-                FooterCheckResult::FooterNotCheckable => {
-                    // Go to next footer
-                    self.footer.set(self.footer.get() + 1);
-                }
-                FooterCheckResult::Error => {
-                    return Err(ProcessLoadError::InternalError);
-                }
+
+                None => {}
             }
+
+            // // Try to check the next footer.
+            // let check_result = self.policy.map_or(FooterCheckResult::Error, |c| {
+            //     // self.processes[proc_index].map_or(FooterCheckResult::NoProcess, |p| {
+            //     self.process_iter
+            //         .take()
+            //         .map(|pi| pi.next().map(|p| check_footer(p, c, footer_index)));
+
+            //     // })
+            // });
+
+            // if config::CONFIG.debug_process_credentials {
+            //     debug!(
+            //         "Checking: Check status for process {}, footer {}: {:?}",
+            //         proc_index, footer_index, check_result
+            //     );
+            // }
         }
     }
 
