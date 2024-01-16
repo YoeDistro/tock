@@ -240,6 +240,15 @@ pub struct ProcessStandard<'a, C: 'static + Chip> {
 }
 
 impl<C: Chip> Process for ProcessStandard<'_, C> {
+    fn get_footer(&self) -> &'static [u8] {
+        self.footers
+    }
+    fn get_integrity_binary(&self) -> &'static [u8] {
+        unsafe {
+            self.flash
+                .get_unchecked(0..(self.header.get_binary_end() as usize))
+        }
+    }
     fn processid(&self) -> ProcessId {
         self.process_id.get()
     }
@@ -1200,8 +1209,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
             flash_start: self.flash_start() as usize,
             flash_non_protected_start: self.flash_non_protected_start() as usize,
             flash_integrity_end: ((self.flash.as_ptr() as usize)
-                + (self.header.get_binary_end() as usize))
-                as *const u8,
+                + (self.header.get_binary_end() as usize)),
             flash_end: self.flash_end() as usize,
             sram_start: self.mem_start() as usize,
             sram_app_brk: self.app_memory_break() as usize,
