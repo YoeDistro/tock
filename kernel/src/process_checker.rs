@@ -15,8 +15,8 @@ use crate::process::{Process, ShortID, State};
 use crate::ErrorCode;
 use tock_tbf::types::TbfFooterV2Credentials;
 
-/// What a AppCredentialsChecker decided a particular application's credential
-/// indicates about the runnability of an application binary.
+/// What a [`AppCredentialsChecker`] decided a particular application's
+/// credential indicates about the runnability of an application binary.
 #[derive(Debug)]
 pub enum CheckResult {
     /// Accept the credential and run the binary.
@@ -30,6 +30,13 @@ pub enum CheckResult {
 
 /// Receives callbacks on whether a credential was accepted or not.
 pub trait Client<'a> {
+    /// Called by the checker after reviewing a credential.
+    ///
+    /// - `result`: The outcome of the check. If the check completed as
+    ///   expected, result is `Ok()` with the check result. On error, result
+    ///   will be `Err()` with an appropriate `ErrorCode`.
+    /// - `credentials`: Pass the credentials back.
+    /// - `binary`: Pass the TBF binary back.
     fn check_done(
         &self,
         result: Result<CheckResult, ErrorCode>,
@@ -40,8 +47,18 @@ pub trait Client<'a> {
 
 /// Implements a Credentials Checking Policy.
 pub trait AppCredentialsChecker<'a> {
+    /// Configure the callback client for when credential checking finishes.
     fn set_client(&self, _client: &'a dyn Client<'a>);
+
+    /// Whether the checker requires that the app has a credential with the
+    /// [`CheckResult`] of [`CheckResult::Accept`].
     fn require_credentials(&self) -> bool;
+
+    /// Main function called to check a credential.
+    ///
+    /// If the credential check started without error this returns `Ok(())`. If
+    /// an error occurred when trying to start checking the credential then
+    /// `Err()` will be returned with a suitable `ErrorCode`.
     fn check_credentials(
         &self,
         credentials: TbfFooterV2Credentials,
