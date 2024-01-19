@@ -22,3 +22,9 @@ install: program
 .PHONY: program
 program: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 	tockloader $(FLAGS) flash --address 0x10000 $<
+
+.PHONY: flash-bootloader
+flash-bootloader:
+	curl -L --output /tmp/makepython-nrf52840-bootloader_v1.1.3.bin https://github.com/tock/tock-bootloader/releases/download/v1.1.3/makepython-nrf52840-bootloader_v1.1.3.bin
+	tockloader flash --address 0 /tmp/makepython-nrf52840-bootloader_v1.1.3.bin
+	rm /tmp/makepython-nrf52840-bootloader_v1.1.3.bin
