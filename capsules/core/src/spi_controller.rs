@@ -112,6 +112,7 @@ impl<'a, S: SpiMasterDevice<'a>> Spi<'a, S> {
 
                         for (i, c) in src[start..end].iter().enumerate() {
                             kwbuf[i] = c.get();
+                            kernel::debug!("kwbuf byte {} in do_next_read_write {}", i, kwbuf[i]);
                         }
                         end - start
                     })
@@ -225,6 +226,8 @@ impl<'a, S: SpiMasterDevice<'a>> SyscallDriver for Spi<'a, S> {
                         let rlen = kernel_data
                             .get_readwrite_processbuffer(rw_allow::READ)
                             .map_or(0, |read| read.len());
+                        kernel::debug!("read length: {}", rlen);
+                        kernel::debug!("write length: {}", wlen);
                         // Note that non-shared and 0-sized read buffers both report 0 as size
                         let len = if rlen == 0 { wlen } else { wlen.min(rlen) };
 
@@ -340,6 +343,7 @@ impl<'a, S: SpiMasterDevice<'a>> SpiMasterClient for Spi<'a, S> {
                                 let dest_area = &dest[start..end];
                                 for (i, c) in src[0..real_len].iter().enumerate() {
                                     dest_area[i].set(*c);
+                                    kernel::debug!("read buffer byte {} in the callback: {}", i, c);
                                 }
                             })
                         });
