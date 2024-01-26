@@ -380,9 +380,13 @@ pub unsafe fn main() {
     let sha = static_init!(Sha256Software<'static>, Sha256Software::new());
     kernel::deferred_call::DeferredCallClient::register(sha);
 
+    let compressor = static_init!(
+        kernel::process_checker::basic::CompressorSha256,
+        kernel::process_checker::basic::CompressorSha256::new()
+    );
     let checker = static_init!(
         AppCheckerSha256,
-        AppCheckerSha256::new(sha, &mut SHA256_CHECKER_BUF)
+        AppCheckerSha256::new(sha, &mut SHA256_CHECKER_BUF, compressor)
     );
     sha.set_client(checker);
 
