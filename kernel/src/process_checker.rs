@@ -185,11 +185,11 @@ impl Compress for () {
     }
 }
 
-pub trait CredentialsCheckingPolicy<'a>:
-    AppCredentialsChecker<'a> + Compress + AppUniqueness
-{
+pub trait CredentialsCheckingPolicy<'a>: AppCredentialsChecker<'a> + AppUniqueness {
+    // type IdAssignment = C;
+
+    fn get_compressor(&self) -> &dyn Compress {
+        &()
+    }
 }
-impl<'a, T: AppCredentialsChecker<'a> + Compress + AppUniqueness> CredentialsCheckingPolicy<'a>
-    for T
-{
-}
+impl<'a> CredentialsCheckingPolicy<'a> for () {}

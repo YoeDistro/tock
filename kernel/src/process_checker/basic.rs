@@ -11,96 +11,13 @@ use crate::hil::digest::{ClientData, ClientHash, ClientVerify};
 use crate::hil::digest::{DigestDataVerify, Sha256};
 use crate::process::{Process, ShortID};
 use crate::process_checker::{AppCredentialsChecker, AppUniqueness};
-use crate::process_checker::{CheckResult, Client, Compress};
+use crate::process_checker::{CheckResult, Client, Compress, CredentialsCheckingPolicy};
 use crate::utilities::cells::OptionalCell;
 use crate::utilities::cells::TakeCell;
 use crate::utilities::leasable_buffer::{SubSlice, SubSliceMut};
 use crate::ErrorCode;
 use tock_tbf::types::TbfFooterV2Credentials;
 use tock_tbf::types::TbfFooterV2CredentialsType;
-
-/// A sample Credentials Checking Policy that loads and runs Userspace
-/// Binaries with unique process names; if it encounters a Userspace
-/// Binary with the same process name as an existing one it fails the
-/// uniqueness check and is not run.
-pub struct AppCheckerSimulated<'a> {
-    deferred_call: DeferredCall,
-    client: OptionalCell<&'a dyn Client<'a>>,
-    credentials: OptionalCell<TbfFooterV2Credentials>,
-    binary: OptionalCell<&'a [u8]>,
-}
-
-impl<'a> AppCheckerSimulated<'a> {
-    pub fn new() -> Self {
-        Self {
-            deferred_call: DeferredCall::new(),
-            client: OptionalCell::empty(),
-            credentials: OptionalCell::empty(),
-            binary: OptionalCell::empty(),
-        }
-    }
-}
-
-impl<'a> DeferredCallClient for AppCheckerSimulated<'a> {
-    fn handle_deferred_call(&self) {
-        self.client.map(|c| {
-            c.check_done(
-                Ok(CheckResult::Pass),
-                self.credentials.take().unwrap(),
-                self.binary.take().unwrap(),
-            )
-        });
-    }
-
-    fn register(&'static self) {
-        self.deferred_call.register(self);
-    }
-}
-
-impl<'a> AppCredentialsChecker<'a> for AppCheckerSimulated<'a> {
-    fn require_credentials(&self) -> bool {
-        false
-    }
-
-    fn check_credentials(
-        &self,
-        credentials: TbfFooterV2Credentials,
-        binary: &'a [u8],
-    ) -> Result<(), (ErrorCode, TbfFooterV2Credentials, &'a [u8])> {
-        if self.credentials.is_none() {
-            self.credentials.replace(credentials);
-            self.binary.replace(binary);
-            self.deferred_call.set();
-            Ok(())
-        } else {
-            Err((ErrorCode::BUSY, credentials, binary))
-        }
-    }
-
-    fn set_client(&self, client: &'a dyn Client<'a>) {
-        self.client.replace(client);
-    }
-}
-
-impl AppUniqueness for AppCheckerSimulated<'_> {
-    // This checker doesn't allow you to run two processes with the
-    // same name.
-    fn different_identifier(&self, process_a: &dyn Process, process_b: &dyn Process) -> bool {
-        let a = process_a.get_process_name();
-        let b = process_b.get_process_name();
-        !a.eq(b)
-    }
-}
-
-impl Compress for AppCheckerSimulated<'_> {
-    fn to_short_id(
-        &self,
-        _process: &dyn Process,
-        _credentials: &TbfFooterV2Credentials,
-    ) -> ShortID {
-        ShortID::LocallyUnique
-    }
-}
 
 pub trait Sha256Verifier<'a>: DigestDataVerify<'a, 32_usize> + Sha256 {}
 impl<'a, T: DigestDataVerify<'a, 32_usize> + Sha256> Sha256Verifier<'a> for T {}
@@ -115,12 +32,14 @@ pub struct AppCheckerSha256 {
     hash: TakeCell<'static, [u8; 32]>,
     binary: OptionalCell<&'static [u8]>,
     credentials: OptionalCell<TbfFooterV2Credentials>,
+    compressor: &'static dyn Compress,
 }
 
 impl AppCheckerSha256 {
     pub fn new(
         hash: &'static dyn Sha256Verifier<'static>,
         buffer: &'static mut [u8; 32],
+        compressor: &'static dyn Compress,
     ) -> AppCheckerSha256 {
         AppCheckerSha256 {
             hasher: hash,
@@ -128,6 +47,7 @@ impl AppCheckerSha256 {
             hash: TakeCell::new(buffer),
             credentials: OptionalCell::empty(),
             binary: OptionalCell::empty(),
+            compressor,
         }
     }
 }
@@ -241,7 +161,14 @@ impl ClientHash<32_usize> for AppCheckerSha256 {
     fn hash_done(&self, _result: Result<(), ErrorCode>, _digest: &'static mut [u8; 32_usize]) {}
 }
 
-impl Compress for AppCheckerSha256 {
+pub struct CompressorSha256 {}
+impl CompressorSha256 {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Compress for CompressorSha256 {
     // This checker generates a short ID from the first 32 bits of the
     // hash and sets the first bit to be 1 to ensure it is non-zero.
     // Note that since these identifiers are only 31 bits, they do not
@@ -259,130 +186,8 @@ impl Compress for AppCheckerSha256 {
     }
 }
 
-/// A sample Credentials Checking Policy that loads and runs Userspace
-/// Binaries that have RSA3072 or RSA4096 credentials. It uses the
-/// public key stored in the credentials as the Application
-/// Identifier, and the bottom 31 bits of the public key as the
-/// ShortID. WARNING: this policy does not actually check the RSA
-/// signature: it always blindly assumes it is correct. This checker
-/// exists to test that the Tock boot sequence correctly handles
-/// ID collisions and version numbers.
-pub struct AppCheckerRsaSimulated<'a> {
-    deferred_call: DeferredCall,
-    client: OptionalCell<&'a dyn Client<'a>>,
-    credentials: OptionalCell<TbfFooterV2Credentials>,
-    binary: OptionalCell<&'a [u8]>,
-}
-
-impl<'a> AppCheckerRsaSimulated<'a> {
-    pub fn new() -> AppCheckerRsaSimulated<'a> {
-        Self {
-            deferred_call: DeferredCall::new(),
-            client: OptionalCell::empty(),
-            credentials: OptionalCell::empty(),
-            binary: OptionalCell::empty(),
-        }
-    }
-}
-
-impl<'a> DeferredCallClient for AppCheckerRsaSimulated<'a> {
-    fn handle_deferred_call(&self) {
-        // This checker does not actually verify the RSA signature; it
-        // assumes the signature is valid and so accepts any RSA
-        // signature. This checker is intended for testing kernel
-        // process loading logic, and not for real uses requiring
-        // integrity or authenticity.
-        self.client.map(|c| {
-            let binary = self.binary.take().unwrap();
-            let cred = self.credentials.take().unwrap();
-            let result = if cred.format() == TbfFooterV2CredentialsType::Rsa3072Key
-                || cred.format() == TbfFooterV2CredentialsType::Rsa4096Key
-            {
-                Ok(CheckResult::Accept)
-            } else {
-                Ok(CheckResult::Pass)
-            };
-
-            c.check_done(result, cred, binary)
-        });
-    }
-
-    fn register(&'static self) {
-        self.deferred_call.register(self);
-    }
-}
-
-impl<'a> AppCredentialsChecker<'a> for AppCheckerRsaSimulated<'a> {
-    fn require_credentials(&self) -> bool {
-        true
-    }
-
-    fn check_credentials(
-        &self,
-        credentials: TbfFooterV2Credentials,
-        binary: &'a [u8],
-    ) -> Result<(), (ErrorCode, TbfFooterV2Credentials, &'a [u8])> {
-        if self.credentials.is_none() {
-            self.credentials.replace(credentials);
-            self.binary.replace(binary);
-            self.deferred_call.set();
-            Ok(())
-        } else {
-            Err((ErrorCode::BUSY, credentials, binary))
-        }
-    }
-
-    fn set_client(&self, client: &'a dyn Client<'a>) {
-        self.client.replace(client);
-    }
-}
-
-impl AppUniqueness for AppCheckerRsaSimulated<'_> {
-    fn different_identifier(&self, process_a: &dyn Process, process_b: &dyn Process) -> bool {
-        let cred_a = process_a.get_credentials();
-        let cred_b = process_b.get_credentials();
-
-        // If it doesn't have credentials, it is by definition
-        // different. It should not be runnable (this checker requires
-        // credentials), but if this returned false it could block
-        // runnable processes from running.
-        cred_a.map_or(true, |a| {
-            cred_b.map_or(true, |b| {
-                // Two IDs are different if they have a different format,
-                // different length (should not happen, but worth checking for
-                // the next test), or any byte of them differs.
-                if a.format() != b.format() {
-                    true
-                } else if a.data().len() != b.data().len() {
-                    true
-                } else {
-                    for (aval, bval) in a.data().iter().zip(b.data().iter()) {
-                        if aval != bval {
-                            return true;
-                        }
-                    }
-                    false
-                }
-            })
-        })
-    }
-}
-
-impl Compress for AppCheckerRsaSimulated<'_> {
-    fn to_short_id(&self, _process: &dyn Process, credentials: &TbfFooterV2Credentials) -> ShortID {
-        // Should never trigger, as we only approve RSA3072 and RSA4096 credentials.
-        let data = credentials.data();
-        if data.len() < 4 {
-            return ShortID::LocallyUnique;
-        }
-        let id: u32 = 0x8000000_u32
-            | (data[0] as u32) << 24
-            | (data[1] as u32) << 16
-            | (data[2] as u32) << 8
-            | (data[3] as u32);
-        match core::num::NonZeroU32::new(id) {
-            Some(nzid) => ShortID::Fixed(nzid),
-            None => ShortID::LocallyUnique, // Should never be generated
-        }
+impl CredentialsCheckingPolicy<'static> for AppCheckerSha256 {
+    fn get_compressor(&self) -> &dyn Compress {
+        self.compressor
     }
 }

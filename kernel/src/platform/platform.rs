@@ -9,6 +9,7 @@ use crate::platform::chip::Chip;
 use crate::platform::scheduler_timer;
 use crate::platform::watchdog;
 use crate::process;
+use crate::process_checker::Compress;
 use crate::process_checker::CredentialsCheckingPolicy;
 use crate::scheduler::Scheduler;
 use crate::syscall;
