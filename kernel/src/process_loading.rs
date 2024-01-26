@@ -19,6 +19,7 @@ use crate::kernel::{Kernel, ProcessCheckerMachine};
 use crate::platform::chip::Chip;
 use crate::platform::platform::KernelResources;
 use crate::process::{Process, ShortID};
+use crate::process_binary::{ProcessBinary, ProcessBinaryError};
 use crate::process_checker::AppCredentialsChecker;
 use crate::process_policies::ProcessFaultPolicy;
 use crate::process_standard::ProcessStandard;
@@ -379,127 +380,165 @@ fn check_processes<KR: KernelResources<C>, C: Chip>(
 fn load_process<C: Chip>(
     kernel: &'static Kernel,
     chip: &'static C,
-    app_flash: &'static [u8],
+    process_binary: ProcessBinary,
     app_memory: &'static mut [u8],
     index: usize,
     fault_policy: &'static dyn ProcessFaultPolicy,
-) -> Result<
-    (
-        &'static [u8],
-        &'static mut [u8],
-        Option<&'static dyn Process>,
-    ),
-    (&'static [u8], &'static mut [u8], ProcessLoadError),
-> {
+) -> Result<(&'static mut [u8], Option<&'static dyn Process>), (&'static mut [u8], ProcessLoadError)>
+{
+    // if config::CONFIG.debug_load_processes {
+    //     debug!(
+    //         "Loading process from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X}",
+    //         app_flash.as_ptr() as usize,
+    //         app_flash.as_ptr() as usize + app_flash.len() - 1,
+    //         app_memory.as_ptr() as usize,
+    //         app_memory.as_ptr() as usize + app_memory.len() - 1
+    //     );
+    // }
+
+    // Need to reassign remaining_memory in every iteration so the compiler
+    // knows it will not be re-borrowed.
+    // If we found an actual app header, try to create a `Process`
+    // object. We also need to shrink the amount of remaining memory
+    // based on whatever is assigned to the new process if one is
+    // created.
+
+    // Try to create a process object from that app slice. If we don't
+    // get a process and we didn't get a loading error (aka we got to
+    // this point), then the app is a disabled process or just padding.
+    let (process_option, unused_memory) = unsafe {
+        ProcessStandard::create(
+            kernel,
+            chip,
+            process_binary,
+            app_memory,
+            fault_policy,
+            index,
+        )
+        .map_err(|(e, memory)| (memory, e))?
+    };
+
+    // process_option.map(|process| {
+    //         if config::CONFIG.debug_load_processes {
+    //             debug!(
+    //                 "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
+    //                 index,
+    //                 entry_flash.as_ptr() as usize,
+    //                 entry_flash.as_ptr() as usize + entry_flash.len() - 1,
+    //                 process.get_addresses().sram_start ,
+    //                 process.get_addresses().sram_end  - 1,
+    //                 process.get_process_name()
+    //             );
+    //         }
+    //     });
+
+    Ok((unused_memory, process_option))
+}
+
+fn load_process_binary(
+    flash: &'static [u8],
+) -> Result<(&'static [u8], ProcessBinary), (&'static [u8], ProcessBinaryError)> {
     if config::CONFIG.debug_load_processes {
         debug!(
-            "Loading process from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X}",
-            app_flash.as_ptr() as usize,
-            app_flash.as_ptr() as usize + app_flash.len() - 1,
-            app_memory.as_ptr() as usize,
-            app_memory.as_ptr() as usize + app_memory.len() - 1
+            "Loading process binary from flash={:#010X}-{:#010X}",
+            flash.as_ptr() as usize,
+            flash.as_ptr() as usize + flash.len() - 1
         );
     }
-    let test_header_slice = match app_flash.get(0..8) {
-        Some(s) => s,
-        None => {
-            // Not enough flash to test for another app. This just means
-            // we are at the end of flash, and there are no more apps to
-            // load.
-            return Err((app_flash, app_memory, ProcessLoadError::NotEnoughFlash));
-        }
-    };
+
+    // If this fails, not enough remaining flash to check for an app.
+    let test_header_slice = flash
+        .get(0..8)
+        .ok_or((flash, ProcessBinaryError::NotEnoughFlash))?;
 
     // Pass the first eight bytes to tbfheader to parse out the length of
     // the tbf header and app. We then use those values to see if we have
     // enough flash remaining to parse the remainder of the header.
-    let header = test_header_slice.try_into();
-    if header.is_err() {
-        return Err((app_flash, app_memory, ProcessLoadError::InternalError));
-    }
-    let header = header.unwrap();
+    //
+    // Start by converting [u8] to [u8; 8].
+    let header = test_header_slice
+        .try_into()
+        .or(Err((flash, ProcessBinaryError::NotEnoughFlash)))?;
 
-    let (version, header_length, entry_length) =
+    let (version, header_length, app_length) =
         match tock_tbf::parse::parse_tbf_header_lengths(header) {
             Ok((v, hl, el)) => (v, hl, el),
-            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(entry_length)) => {
+            Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
                 // If we could not parse the header, then we want to skip over
                 // this app and look for the next one.
-                (0, 0, entry_length)
+                (0, 0, app_length)
             }
             Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
                 // Since Tock apps use a linked list, it is very possible the
                 // header we started to parse is intentionally invalid to signal
                 // the end of apps. This is ok and just means we have finished
                 // loading apps.
-                return Err((app_flash, app_memory, ProcessLoadError::TbfHeaderNotFound));
+                return Err((flash, ProcessBinaryError::TbfHeaderNotFound));
             }
         };
 
     // Now we can get a slice which only encompasses the length of flash
     // described by this tbf header.  We will either parse this as an actual
     // app, or skip over this region.
-    let entry_flash = match app_flash.get(0..entry_length as usize) {
-        None => return Err((app_flash, app_memory, ProcessLoadError::NotEnoughFlash)),
-        Some(val) => val,
-    };
+    let app_flash = flash
+        .get(0..app_length as usize)
+        .ok_or((flash, ProcessBinaryError::NotEnoughFlash))?;
 
     // Advance the flash slice for process discovery beyond this last entry.
     // This will be the start of where we look for a new process since Tock
     // processes are allocated back-to-back in flash.
-    let remaining_flash = match app_flash.get(entry_flash.len()..) {
-        None => return Err((app_flash, app_memory, ProcessLoadError::NotEnoughFlash)),
-        Some(val) => val,
-    };
+    let remaining_flash = flash
+        .get(app_flash.len()..)
+        .ok_or((flash, ProcessBinaryError::NotEnoughFlash))?;
 
-    // Need to reassign remaining_memory in every iteration so the compiler
-    // knows it will not be re-borrowed.
-    let (process_option, remaining_memory) = if header_length > 0 {
-        // If we found an actual app header, try to create a `Process`
-        // object. We also need to shrink the amount of remaining memory
-        // based on whatever is assigned to the new process if one is
-        // created.
+    let pb = ProcessBinary::create(app_flash, header_length as usize, version, true)
+        .map_err(|e| (flash, e))?;
 
-        // Try to create a process object from that app slice. If we don't
-        // get a process and we didn't get a loading error (aka we got to
-        // this point), then the app is a disabled process or just padding.
-        let (process_option, unused_memory) = unsafe {
-            let result = ProcessStandard::create(
-                kernel,
-                chip,
-                entry_flash,
-                header_length as usize,
-                version,
-                app_memory,
-                fault_policy,
-                true,
-                index,
-            );
-            match result {
-                Ok(tuple) => tuple,
-                Err((err, memory)) => {
-                    return Err((remaining_flash, memory, err));
-                }
-            }
-        };
-        process_option.map(|process| {
-            if config::CONFIG.debug_load_processes {
-                debug!(
-                    "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
-                    index,
-                    entry_flash.as_ptr() as usize,
-                    entry_flash.as_ptr() as usize + entry_flash.len() - 1,
-                    process.get_addresses().sram_start ,
-                    process.get_addresses().sram_end  - 1,
-                    process.get_process_name()
-                );
-            }
-        });
-        (process_option, unused_memory)
-    } else {
-        // We are just skipping over this region of flash, so we have the
-        // same amount of process memory to allocate from.
-        (None, app_memory)
-    };
-    Ok((remaining_flash, remaining_memory, process_option))
+    Ok((remaining_flash, pb))
+
+    // // Need to reassign remaining_memory in every iteration so the compiler
+    // // knows it will not be re-borrowed.
+    // let (process_option, remaining_memory) = if header_length > 0 {
+    //     // If we found an actual app header, try to create a `Process`
+    //     // object. We also need to shrink the amount of remaining memory
+    //     // based on whatever is assigned to the new process if one is
+    //     // created.
+
+    //     // Try to create a process object from that app slice. If we don't
+    //     // get a process and we didn't get a loading error (aka we got to
+    //     // this point), then the app is a disabled process or just padding.
+    //     let (process_option, unused_memory) = unsafe {
+    //         let result = ProcessBinary::create(
+
+    //             app_flash,
+    //             header_length as usize,
+    //             version,
+    //         );
+    //         match result {
+    //             Ok(tuple) => tuple,
+    //             Err((err, memory)) => {
+    //                 return Err((remaining_flash, memory, err));
+    //             }
+    //         }
+    //     };
+    //     // process_option.map(|process| {
+    //     //     if config::CONFIG.debug_load_processes {
+    //     //         debug!(
+    //     //             "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
+    //     //             index,
+    //     //             entry_flash.as_ptr() as usize,
+    //     //             entry_flash.as_ptr() as usize + entry_flash.len() - 1,
+    //     //             process.get_addresses().sram_start ,
+    //     //             process.get_addresses().sram_end  - 1,
+    //     //             process.get_process_name()
+    //     //         );
+    //     //     }
+    //     // });
+    //     (process_option, unused_memory)
+    // } else {
+    //     // We are just skipping over this region of flash, so we have the
+    //     // same amount of process memory to allocate from.
+    //     (None, app_memory)
+    // };
+    // Ok((remaining_flash, remaining_memory, process_option))
 }

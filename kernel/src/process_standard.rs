@@ -24,6 +24,7 @@ use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::platform::mpu::{self, MPU};
 use crate::process::BinaryVersion;
+use crate::process::ProcessBinary;
 use crate::process::{Error, FunctionCall, FunctionCallSource, Process, State, Task};
 use crate::process::{FaultAction, ProcessCustomGrantIdentifier, ProcessId};
 use crate::process::{ProcessAddresses, ProcessSizes, ShortID};
@@ -1342,130 +1343,131 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
     pub(crate) unsafe fn create<'a>(
         kernel: &'static Kernel,
         chip: &'static C,
-        app_flash: &'static [u8],
-        header_length: usize,
-        app_version: u16,
+        pb: ProcessBinary,
+        // app_flash: &'static [u8],
+        // header_length: usize,
+        // app_version: u16,
         remaining_memory: &'a mut [u8],
         fault_policy: &'static dyn ProcessFaultPolicy,
-        require_kernel_version: bool,
+        // require_kernel_version: bool,
         index: usize,
     ) -> Result<(Option<&'static dyn Process>, &'a mut [u8]), (ProcessLoadError, &'a mut [u8])>
     {
-        // Get a slice for just the app header.
-        let header_flash = match app_flash.get(0..header_length) {
-            Some(h) => h,
-            None => return Err((ProcessLoadError::NotEnoughFlash, remaining_memory)),
-        };
+        // // Get a slice for just the app header.
+        // let header_flash = match app_flash.get(0..header_length) {
+        //     Some(h) => h,
+        //     None => return Err((ProcessLoadError::NotEnoughFlash, remaining_memory)),
+        // };
 
-        // Parse the full TBF header to see if this is a valid app. If the
-        // header can't parse, we will error right here.
-        let tbf_header = match tock_tbf::parse::parse_tbf_header(header_flash, app_version) {
-            Ok(h) => h,
-            Err(err) => return Err((err.into(), remaining_memory)),
-        };
+        // // Parse the full TBF header to see if this is a valid app. If the
+        // // header can't parse, we will error right here.
+        // let tbf_header = match tock_tbf::parse::parse_tbf_header(header_flash, app_version) {
+        //     Ok(h) => h,
+        //     Err(err) => return Err((err.into(), remaining_memory)),
+        // };
 
-        let process_name = tbf_header.get_package_name();
+        let process_name = pb.header.get_package_name();
 
-        // If this isn't an app (i.e. it is padding) or it is an app but it
-        // isn't enabled, then we can skip it and do not create a `Process`
-        // object.
-        if !tbf_header.is_app() || !tbf_header.enabled() {
-            if config::CONFIG.debug_load_processes {
-                if !tbf_header.is_app() {
-                    debug!(
-                        "Padding in flash={:#010X}-{:#010X}",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash.len() - 1
-                    );
-                }
-                if !tbf_header.enabled() {
-                    debug!(
-                        "Process not enabled flash={:#010X}-{:#010X} process={:?}",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash.len() - 1,
-                        process_name.unwrap_or("(no name)")
-                    );
-                }
-            }
-            // Return no process and the full memory slice we were given.
-            return Ok((None, remaining_memory));
-        }
+        // // If this isn't an app (i.e. it is padding) or it is an app but it
+        // // isn't enabled, then we can skip it and do not create a `Process`
+        // // object.
+        // if !tbf_header.is_app() || !tbf_header.enabled() {
+        //     if config::CONFIG.debug_load_processes {
+        //         if !tbf_header.is_app() {
+        //             debug!(
+        //                 "Padding in flash={:#010X}-{:#010X}",
+        //                 app_flash.as_ptr() as usize,
+        //                 app_flash.as_ptr() as usize + app_flash.len() - 1
+        //             );
+        //         }
+        //         if !tbf_header.enabled() {
+        //             debug!(
+        //                 "Process not enabled flash={:#010X}-{:#010X} process={:?}",
+        //                 app_flash.as_ptr() as usize,
+        //                 app_flash.as_ptr() as usize + app_flash.len() - 1,
+        //                 process_name.unwrap_or("(no name)")
+        //             );
+        //         }
+        //     }
+        //     // Return no process and the full memory slice we were given.
+        //     return Ok((None, remaining_memory));
+        // }
 
-        if let Some((major, minor)) = tbf_header.get_kernel_version() {
-            // If the `KernelVersion` header is present, we read the requested
-            // kernel version and compare it to the running kernel version.
-            if crate::KERNEL_MAJOR_VERSION != major || crate::KERNEL_MINOR_VERSION < minor {
-                // If the kernel major version is different, we prevent the
-                // process from being loaded.
-                //
-                // If the kernel major version is the same, we compare the
-                // kernel minor version. The current running kernel minor
-                // version has to be greater or equal to the one that the
-                // process has requested. If not, we prevent the process from
-                // loading.
-                if config::CONFIG.debug_load_processes {
-                    debug!("WARN process {:?} not loaded as it requires kernel version >= {}.{} and < {}.0, (running kernel {}.{})",
-                        process_name.unwrap_or("(no name)"),
-                        major,
-                        minor,
-                        (major+1),
-                        crate::KERNEL_MAJOR_VERSION,
-                        crate::KERNEL_MINOR_VERSION);
-                }
-                return Err((
-                    ProcessLoadError::IncompatibleKernelVersion {
-                        version: Some((major, minor)),
-                    },
-                    remaining_memory,
-                ));
-            }
-        } else {
-            if require_kernel_version {
-                // If enforcing the kernel version is requested, and the
-                // `KernelVersion` header is not present, we prevent the process
-                // from loading.
-                if config::CONFIG.debug_load_processes {
-                    debug!("WARN process {:?} not loaded as it has no kernel version header, please upgrade to elf2tab >= 0.8.0",
-                               process_name.unwrap_or ("(no name"));
-                }
-                return Err((
-                    ProcessLoadError::IncompatibleKernelVersion { version: None },
-                    remaining_memory,
-                ));
-            }
-        }
+        // if let Some((major, minor)) = tbf_header.get_kernel_version() {
+        //     // If the `KernelVersion` header is present, we read the requested
+        //     // kernel version and compare it to the running kernel version.
+        //     if crate::KERNEL_MAJOR_VERSION != major || crate::KERNEL_MINOR_VERSION < minor {
+        //         // If the kernel major version is different, we prevent the
+        //         // process from being loaded.
+        //         //
+        //         // If the kernel major version is the same, we compare the
+        //         // kernel minor version. The current running kernel minor
+        //         // version has to be greater or equal to the one that the
+        //         // process has requested. If not, we prevent the process from
+        //         // loading.
+        //         if config::CONFIG.debug_load_processes {
+        //             debug!("WARN process {:?} not loaded as it requires kernel version >= {}.{} and < {}.0, (running kernel {}.{})",
+        //                 process_name.unwrap_or("(no name)"),
+        //                 major,
+        //                 minor,
+        //                 (major+1),
+        //                 crate::KERNEL_MAJOR_VERSION,
+        //                 crate::KERNEL_MINOR_VERSION);
+        //         }
+        //         return Err((
+        //             ProcessLoadError::IncompatibleKernelVersion {
+        //                 version: Some((major, minor)),
+        //             },
+        //             remaining_memory,
+        //         ));
+        //     }
+        // } else {
+        //     if require_kernel_version {
+        //         // If enforcing the kernel version is requested, and the
+        //         // `KernelVersion` header is not present, we prevent the process
+        //         // from loading.
+        //         if config::CONFIG.debug_load_processes {
+        //             debug!("WARN process {:?} not loaded as it has no kernel version header, please upgrade to elf2tab >= 0.8.0",
+        //                        process_name.unwrap_or ("(no name"));
+        //         }
+        //         return Err((
+        //             ProcessLoadError::IncompatibleKernelVersion { version: None },
+        //             remaining_memory,
+        //         ));
+        //     }
+        // }
 
-        let binary_end = tbf_header.get_binary_end() as usize;
-        let total_size = app_flash.len();
+        // let binary_end = tbf_header.get_binary_end() as usize;
+        // let total_size = app_flash.len();
 
-        // End of the portion of the application binary covered by
-        // integrity. Now handle footers.
-        let footer_region = match app_flash.get(binary_end..total_size) {
-            Some(f) => f,
-            None => return Err((ProcessLoadError::NotEnoughFlash, remaining_memory)),
-        };
+        // // End of the portion of the application binary covered by
+        // // integrity. Now handle footers.
+        // let footer_region = match app_flash.get(binary_end..total_size) {
+        //     Some(f) => f,
+        //     None => return Err((ProcessLoadError::NotEnoughFlash, remaining_memory)),
+        // };
 
-        // Check that the process is at the correct location in
-        // flash if the TBF header specified a fixed address. If there is a
-        // mismatch we catch that early.
-        if let Some(fixed_flash_start) = tbf_header.get_fixed_address_flash() {
-            // The flash address in the header is based on the app binary,
-            // so we need to take into account the header length.
-            let actual_address = app_flash.as_ptr() as u32 + tbf_header.get_protected_size();
-            let expected_address = fixed_flash_start;
-            if actual_address != expected_address {
-                return Err((
-                    ProcessLoadError::IncorrectFlashAddress {
-                        actual_address,
-                        expected_address,
-                    },
-                    remaining_memory,
-                ));
-            }
-        }
+        // // Check that the process is at the correct location in
+        // // flash if the TBF header specified a fixed address. If there is a
+        // // mismatch we catch that early.
+        // if let Some(fixed_flash_start) = tbf_header.get_fixed_address_flash() {
+        //     // The flash address in the header is based on the app binary,
+        //     // so we need to take into account the header length.
+        //     let actual_address = app_flash.as_ptr() as u32 + tbf_header.get_protected_size();
+        //     let expected_address = fixed_flash_start;
+        //     if actual_address != expected_address {
+        //         return Err((
+        //             ProcessLoadError::IncorrectFlashAddress {
+        //                 actual_address,
+        //                 expected_address,
+        //             },
+        //             remaining_memory,
+        //         ));
+        //     }
+        // }
 
         // Otherwise, actually load the app.
-        let process_ram_requested_size = tbf_header.get_minimum_app_ram_size() as usize;
+        let process_ram_requested_size = pb.header.get_minimum_app_ram_size() as usize;
 
         // Initialize MPU region configuration.
         let mut mpu_config = match chip.mpu().new_config() {
@@ -1477,9 +1479,9 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         if chip
             .mpu()
             .allocate_region(
-                app_flash.as_ptr(),
-                app_flash.len(),
-                app_flash.len(),
+                pb.flash.as_ptr(),
+                pb.flash.len(),
+                pb.flash.len(),
                 mpu::Permissions::ReadExecuteOnly,
                 &mut mpu_config,
             )
@@ -1488,8 +1490,8 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
             if config::CONFIG.debug_load_processes {
                 debug!(
                         "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate MPU region for flash",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash.len() - 1,
+                        pb.flash.as_ptr() as usize,
+                        pb.flash.as_ptr() as usize + pb.flash.len() - 1,
                         process_name
                     );
             }
@@ -1553,8 +1555,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         // Right now, we only support skipping some RAM and leaving a chunk
         // unused so that the memory region starts where the process needs it
         // to.
-        let remaining_memory = if let Some(fixed_memory_start) = tbf_header.get_fixed_address_ram()
-        {
+        let remaining_memory = if let Some(fixed_memory_start) = pb.header.get_fixed_address_ram() {
             // The process does have a fixed address.
             if fixed_memory_start == remaining_memory.as_ptr() as u32 {
                 // Address already matches.
@@ -1623,8 +1624,8 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
                 if config::CONFIG.debug_load_processes {
                     debug!(
                             "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate memory region of size >= {:#X}",
-                            app_flash.as_ptr() as usize,
-                            app_flash.as_ptr() as usize + app_flash.len() - 1,
+                            pb.flash.as_ptr() as usize,
+                            pb.flash.as_ptr() as usize + pb.flash.len() - 1,
                             process_name,
                             min_total_memory_size
                         );
@@ -1647,7 +1648,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         // field is optional, processes that are position independent do not
         // need a fixed address) then we check that we used the same address
         // when we allocated it in RAM.
-        if let Some(fixed_memory_start) = tbf_header.get_fixed_address_ram() {
+        if let Some(fixed_memory_start) = pb.header.get_fixed_address_ram() {
             let actual_address = remaining_memory.as_ptr() as u32 + app_memory_start_offset as u32;
             let expected_address = fixed_memory_start;
             if actual_address != expected_address {
@@ -1802,8 +1803,8 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
 
         // Save copies of these in case the app was compiled for fixed addresses
         // for later debugging.
-        let fixed_address_flash = tbf_header.get_fixed_address_flash();
-        let fixed_address_ram = tbf_header.get_fixed_address_ram();
+        let fixed_address_flash = pb.header.get_fixed_address_flash();
+        let fixed_address_ram = pb.header.get_fixed_address_ram();
 
         process
             .process_id
@@ -1814,15 +1815,15 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         process.allow_high_water_mark = Cell::new(initial_allow_high_water_mark);
         process.memory_start = allocated_memory_start;
         process.memory_len = allocated_memory_len;
-        process.header = tbf_header;
+        process.header = pb.header;
         process.kernel_memory_break = Cell::new(kernel_memory_break);
         process.app_break = Cell::new(initial_app_brk);
         process.grant_pointers = MapCell::new(grant_pointers);
 
         process.credentials = OptionalCell::empty();
 
-        process.footers = footer_region;
-        process.flash = app_flash;
+        process.footers = pb.footers;
+        process.flash = pb.flash;
 
         process.stored_state = MapCell::new(Default::default());
         // Mark this process as unverified/unrunnable: leave it to the loader to
@@ -1876,8 +1877,8 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
                 if config::CONFIG.debug_load_processes {
                     debug!(
                         "[!] flash={:#010X}-{:#010X} process={:?} - couldn't initialize process",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash.len() - 1,
+                        pb.flash.as_ptr() as usize,
+                        pb.flash.as_ptr() as usize + pb.flash.len() - 1,
                         process_name
                     );
                 }
