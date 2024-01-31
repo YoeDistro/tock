@@ -205,17 +205,21 @@ unsafe impl crate::capabilities::ProcessInitCapability for KernelProcessInitCapa
 struct KernelProcessApprovalCapability {}
 unsafe impl crate::capabilities::ProcessApprovalCapability for KernelProcessApprovalCapability {}
 
+pub(crate) trait ProcessCheckerMachineClient {
+    fn done(&self, process_binary: &'static ProcessBinary, result: Result<(), ProcessCheckError>);
+}
+
 /// Iterates across the `processes` array, checking footers and deciding
 /// whether to make them runnable based on the checking policy in `checker`.
 /// Starts processes that pass the policy and puts processes that don't
 /// pass the policy into the `CredentialsFailed` state.
 pub struct ProcessCheckerMachine {
-    process_index: Cell<usize>,
+    // process_index: Cell<usize>,
     footer_index: Cell<usize>,
     policy: OptionalCell<&'static dyn CredentialsCheckingPolicy<'static>>,
-    process_binaries: OptionalCell<[ProcessBinary]>,
-    processes: &'static [Option<&'static dyn Process>],
-    approve_cap: KernelProcessApprovalCapability,
+    process_binary: OptionalCell<ProcessBinary>,
+    // processes: &'static [Option<&'static dyn Process>],
+    // approve_cap: KernelProcessApprovalCapability,
 }
 
 #[derive(Debug)]
@@ -229,11 +233,20 @@ enum FooterCheckResult {
 }
 
 impl ProcessCheckerMachine {
+    fn set_client(&self, client: &'static ProcessCheckerMachineClient) {
+        self.client.set(client);
+    }
+
+    fn check(&self, process_binary: &'static ProcessBinary) -> Result<(), ProcessCheckError> {
+        self.process_binary.set(process_binary);
+        self.next();
+    }
+
     /// Check the next footer of the next process. Returns:
     ///   - Ok(true) if a valid footer was found and is being checked
     ///   - Ok(false) there are no more footers to check
     ///   - Err(r): an error occured and process verification has to stop.
-    pub fn next(&self) -> Result<bool, ProcessLoadError> {
+    pub fn next(&self) -> Result<bool, ProcessCheckError> {
         loop {
             // let mut proc_index = self.process.get();
 
@@ -266,11 +279,7 @@ impl ProcessCheckerMachine {
             //     return Ok(false);
             // }
 
-            let pb = self
-                .process_binaries
-                .map_or(FooterCheckResult::Error, |pbs| {
-                    pbs.get(self.process_index.get())
-                })?;
+            let pb = self.process_binary.get()?;
 
             let policy = self.policy.get()?;
 
@@ -295,34 +304,45 @@ impl ProcessCheckerMachine {
                     // should be allowed to run.
                     self.policy.map(|policy| {
                         let requires = policy.require_credentials();
-                        let _res = self.processes[proc_index].map_or(
-                            Err(ProcessLoadError::InternalError),
-                            |p| {
-                                if requires {
-                                    if config::CONFIG.debug_process_credentials {
-                                        debug!(
-                                            "Checking: required, but all passes, do not run {}",
-                                            p.get_process_name()
-                                        );
-                                    }
-                                    p.mark_credentials_fail(&self.approve_cap);
-                                } else {
-                                    if config::CONFIG.debug_process_credentials {
-                                        debug!(
-                                            "Checking: not required, all passes, run {}",
-                                            p.get_process_name()
-                                        );
-                                    }
-                                    p.mark_credentials_pass(
-                                        None,
-                                        ShortID::LocallyUnique,
-                                        &self.approve_cap,
-                                    )
-                                    .or(Err(ProcessLoadError::InternalError))?;
-                                }
-                                Ok(true)
-                            },
-                        );
+
+                        // TODO: verify we are doing this from an "interrupt"!!!
+                        let result = if requires {
+                            Err(ProcessLoadError::NoAcceptedCredentials)
+                        } else {
+                            Ok(())
+                        };
+
+                        self.client
+                            .map(|client| client.done(process_binary, result));
+
+                        // let _res = self.processes[proc_index].map_or(
+                        //     Err(ProcessLoadError::InternalError),
+                        //     |p| {
+                        //         if requires {
+                        //             if config::CONFIG.debug_process_credentials {
+                        //                 debug!(
+                        //                     "Checking: required, but all passes, do not run {}",
+                        //                     p.get_process_name()
+                        //                 );
+                        //             }
+                        //             p.mark_credentials_fail(&self.approve_cap);
+                        //         } else {
+                        //             if config::CONFIG.debug_process_credentials {
+                        //                 debug!(
+                        //                     "Checking: not required, all passes, run {}",
+                        //                     p.get_process_name()
+                        //                 );
+                        //             }
+                        //             p.mark_credentials_pass(
+                        //                 None,
+                        //                 ShortID::LocallyUnique,
+                        //                 &self.approve_cap,
+                        //             )
+                        //             .or(Err(ProcessLoadError::InternalError))?;
+                        //         }
+                        //         Ok(true)
+                        //     },
+                        // );
                     });
                     self.process.set(self.process.get() + 1);
                     self.footer.set(0);
@@ -352,39 +372,48 @@ impl ProcessCheckerMachine {
 // Iterates through the footer list until if finds `next_footer` or
 // it reached the end of the footer region.
 fn check_footer(
-    process: &'static dyn Process,
+    process_binary: &'static ProcessBinary,
     policy: &'static dyn CredentialsCheckingPolicy<'static>,
     next_footer: usize,
 ) -> FooterCheckResult {
     if config::CONFIG.debug_process_credentials {
         debug!(
             "Checking: Checking {} footer {}",
-            process.get_process_name(),
+            process_binary.get_package_name.get_process_name(),
             next_footer
         );
     }
-    let footers_position_ptr = process.get_addresses().flash_integrity_end;
-    let mut footers_position = footers_position_ptr as usize;
+    // let footers_position_ptr = process.get_addresses().flash_integrity_end;
+    // let mut footers_position = footers_position_ptr as usize;
 
-    let flash_start_ptr = process.get_addresses().flash_start as *const u8;
-    let flash_start = flash_start_ptr as usize;
-    let flash_integrity_len = footers_position - flash_start;
-    let flash_end = process.get_addresses().flash_end;
-    let footers_len = flash_end - footers_position;
+    // let flash_start_ptr = process.get_addresses().flash_start as *const u8;
+    // let flash_start = flash_start_ptr as usize;
+    // let flash_integrity_len = footers_position - flash_start;
+    // let flash_end = process.get_addresses().flash_end;
+    // let footers_len = flash_end - footers_position;
+
+    // let mut current_footer = 0;
+    // let mut footer_slice = unsafe { slice::from_raw_parts(footers_position_ptr, footers_len) };
+    // let binary_slice = unsafe { slice::from_raw_parts(flash_start_ptr, flash_integrity_len) };
+
+    let integrity_slice = process_binary.get_integrity_region_slice();
+    let footer_slice = process_binary.footer;
 
     if config::CONFIG.debug_process_credentials {
         debug!(
             "Checking: Integrity region is {:x}-{:x}; footers at {:x}-{:x}",
-            flash_start,
-            flash_start + flash_integrity_len,
-            footers_position,
-            flash_end
+            integrity_slice.as_ptr() as usize,
+            integrity_slice.as_ptr() as usize + integrity_slice.len(),
+            footer_slice.as_ptr() as usize,
+            footer_slice.as_ptr() as usize + footer_slice.len(),
         );
     }
+
     let mut current_footer = 0;
-    let mut footer_slice = unsafe { slice::from_raw_parts(footers_position_ptr, footers_len) };
-    let binary_slice = unsafe { slice::from_raw_parts(flash_start_ptr, flash_integrity_len) };
-    while current_footer <= next_footer && footers_position < flash_end {
+    // let mut footers_position = footer_slice.as_ptr() as usize;
+
+    // while current_footer <= next_footer && footers_position < flash_end {
+    while current_footer <= next_footer {
         let parse_result = tock_tbf::parse::parse_tbf_footer(footer_slice);
         match parse_result {
             Err(TbfParseError::NotEnoughFlash) => {
@@ -407,15 +436,15 @@ fn check_footer(
             }
             Ok((footer, len)) => {
                 let slice_result = footer_slice.get(len as usize + 4..);
-                if config::CONFIG.debug_process_credentials {
-                    debug!(
-                        "ProcessLoad: @{:x} found a len {} footer: {:?}",
-                        footers_position,
-                        len,
-                        footer.format()
-                    );
-                }
-                footers_position = footers_position + len as usize + 4;
+                // if config::CONFIG.debug_process_credentials {
+                //     debug!(
+                //         "ProcessLoad: @{:x} found a len {} footer: {:?}",
+                //         footers_position,
+                //         len,
+                //         footer.format()
+                //     );
+                // }
+                // footers_position = footers_position + len as usize + 4;
                 match slice_result {
                     None => {
                         return FooterCheckResult::BadFooter;
@@ -423,7 +452,7 @@ fn check_footer(
                     Some(slice) => {
                         footer_slice = slice;
                         if current_footer == next_footer {
-                            match policy.check_credentials(footer, binary_slice) {
+                            match policy.check_credentials(footer, integrity_slice) {
                                 Ok(()) => {
                                     if config::CONFIG.debug_process_credentials {
                                         debug!("Checking: Found {}, checking", current_footer);
@@ -462,7 +491,7 @@ fn check_footer(
 impl process_checker::Client<'static> for ProcessCheckerMachine {
     fn check_done(
         &self,
-        result: Result<process_checker::CheckResult, ErrorCode>,
+        result: Result<CheckResult, ErrorCode>,
         credentials: TbfFooterV2Credentials,
         _binary: &'static [u8],
     ) {
@@ -470,30 +499,42 @@ impl process_checker::Client<'static> for ProcessCheckerMachine {
             debug!("Checking: check_done gave result {:?}", result);
         }
         match result {
-            Ok(process_checker::CheckResult::Accept) => {
-                self.processes[self.process.get()].map(|p| {
-                    let short_id = self.policy.map_or(ShortID::LocallyUnique, |policy| {
-                        policy.to_short_id(p, &credentials)
-                    });
-                    let _r =
-                        p.mark_credentials_pass(Some(credentials), short_id, &self.approve_cap);
+            Ok(CheckResult::Accept) => {
+                // self.processes[self.process.get()].map(|p| {
+                //     let short_id = self.policy.map_or(ShortID::LocallyUnique, |policy| {
+                //         policy.to_short_id(p, &credentials)
+                //     });
+                //     let _r =
+                //         p.mark_credentials_pass(Some(credentials), short_id, &self.approve_cap);
+                // });
+                // self.process.set(self.process.get() + 1);
+
+                self.client.map(|client| {
+                    let pb = self.process_binary.take();
+
+                    client.done(pb, Ok(()))
                 });
-                self.process.set(self.process.get() + 1);
             }
-            Ok(process_checker::CheckResult::Pass) => {
-                self.footer.set(self.footer.get() + 1);
+            Ok(CheckResult::Pass) => {
+                self.footer_index.increment();
             }
-            Ok(process_checker::CheckResult::Reject) => {
-                self.processes[self.process.get()].map(|p| {
-                    p.mark_credentials_fail(&self.approve_cap);
+            Ok(CheckResult::Reject) => {
+                // self.processes[self.process.get()].map(|p| {
+                //     p.mark_credentials_fail(&self.approve_cap);
+                // });
+                // self.process.set(self.process.get() + 1);
+
+                self.client.map(|client| {
+                    let pb = self.process_binary.take();
+
+                    client.done(pb, Err(ProcessCheckError::CredentialRejected))
                 });
-                self.process.set(self.process.get() + 1);
             }
             Err(e) => {
                 if config::CONFIG.debug_process_credentials {
                     debug!("Checking: error checking footer {:?}", e);
                 }
-                self.footer.set(self.footer.get() + 1);
+                self.footer_index.increment();
             }
         }
         let cont = self.next();

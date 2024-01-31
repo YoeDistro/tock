@@ -99,6 +99,8 @@ const FAULT_RESPONSE: kernel::process::StopFaultPolicy = kernel::process::StopFa
 
 static mut PROCESSES: [Option<&'static dyn kernel::process::Process>; NUM_PROCS] =
     [None; NUM_PROCS];
+static mut PROCESS_BINARIES: [Option<kernel::process::ProcessBinary>; NUM_PROCS] =
+    [None; NUM_PROCS];
 
 static mut CHIP: Option<&'static sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
@@ -834,6 +836,7 @@ pub unsafe fn main() {
             &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
         ),
         &mut PROCESSES,
+        &mut PROCESS_BINARIES,
         &FAULT_RESPONSE,
         &process_mgmt_cap,
     )

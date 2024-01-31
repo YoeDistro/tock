@@ -8,6 +8,7 @@
 //! checking whether they are allowed to be loaded, and if so initializing a process
 //! structure to run it.
 
+use core::cell::Cell;
 use core::convert::TryInto;
 use core::fmt;
 
@@ -15,14 +16,15 @@ use crate::capabilities::{ProcessApprovalCapability, ProcessManagementCapability
 use crate::config;
 use crate::create_capability;
 use crate::debug;
-use crate::kernel::{Kernel, ProcessCheckerMachine};
+use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::platform::platform::KernelResources;
 use crate::process::{Process, ShortID};
 use crate::process_binary::{ProcessBinary, ProcessBinaryError};
-use crate::process_checker::AppCredentialsChecker;
+use crate::process_checker::{AppCredentialsChecker, ProcessCheckerMachine};
 use crate::process_policies::ProcessFaultPolicy;
 use crate::process_standard::ProcessStandard;
+use crate::utilities::cells::OptionalCell;
 
 /// Errors that can occur when trying to load and create processes.
 pub enum ProcessLoadError {
@@ -541,4 +543,119 @@ fn load_process_binary(
     //     (None, app_memory)
     // };
     // Ok((remaining_flash, remaining_memory, process_option))
+}
+
+pub trait ProcessLoaderMachineClient {
+    fn process_loaded(&self, result: Result<(), ProcessLoadError>);
+}
+
+pub struct ProcessLoaderMachine {
+    checker: &'static ProcessCheckerMachine,
+    process_binary: OptionalCell<&'static mut ProcessBinary>,
+
+    procs: &'static mut [Option<&'static dyn Process>],
+    flash: Cell<&'static [u8]>,
+}
+
+impl ProcessLoaderMachine {
+    pub fn new(
+        checker: &'static ProcessCheckerMachine,
+        procs: &'static mut [Option<&'static dyn Process>],
+        flash: &'static [u8],
+    ) -> Self {
+        Self {
+            checker,
+            procs,
+            flash: Cell::new(flash),
+        }
+    }
+
+    pub fn start(&self) -> Result<(), ProcessLoadError> {
+        let ret = self.load_process_binary();
+        match ret {
+            Ok(pb) => self.checker.check(pb),
+            Err(e) => ProcessLoadError::BinaryError(e),
+        }
+    }
+
+    pub fn load_process_binary(&self) -> Result<ProcessBinary, ProcessBinaryError> {
+        let flash = self.flash.get();
+
+        if config::CONFIG.debug_load_processes {
+            debug!(
+                "Loading process binary from flash={:#010X}-{:#010X}",
+                flash.as_ptr() as usize,
+                flash.as_ptr() as usize + flash.len() - 1
+            );
+        }
+
+        // If this fails, not enough remaining flash to check for an app.
+        let test_header_slice = flash.get(0..8).ok_or(ProcessBinaryError::NotEnoughFlash)?;
+
+        // Pass the first eight bytes to tbfheader to parse out the length of
+        // the tbf header and app. We then use those values to see if we have
+        // enough flash remaining to parse the remainder of the header.
+        //
+        // Start by converting [u8] to [u8; 8].
+        let header = test_header_slice
+            .try_into()
+            .or(Err(ProcessBinaryError::NotEnoughFlash))?;
+
+        let (version, header_length, app_length) =
+            match tock_tbf::parse::parse_tbf_header_lengths(header) {
+                Ok((v, hl, el)) => (v, hl, el),
+                Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(app_length)) => {
+                    // If we could not parse the header, then we want to skip over
+                    // this app and look for the next one.
+                    (0, 0, app_length)
+                }
+                Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
+                    // Since Tock apps use a linked list, it is very possible the
+                    // header we started to parse is intentionally invalid to signal
+                    // the end of apps. This is ok and just means we have finished
+                    // loading apps.
+                    return Err(ProcessBinaryError::TbfHeaderNotFound);
+                }
+            };
+
+        // Now we can get a slice which only encompasses the length of flash
+        // described by this tbf header.  We will either parse this as an actual
+        // app, or skip over this region.
+        let app_flash = flash
+            .get(0..app_length as usize)
+            .ok_or(ProcessBinaryError::NotEnoughFlash)?;
+
+        // Advance the flash slice for process discovery beyond this last entry.
+        // This will be the start of where we look for a new process since Tock
+        // processes are allocated back-to-back in flash.
+        let remaining_flash = flash
+            .get(app_flash.len()..)
+            .ok_or(ProcessBinaryError::NotEnoughFlash)?;
+
+        let pb = ProcessBinary::create(app_flash, header_length as usize, version, true)?;
+
+        self.flash.set(remaining_flash);
+
+        Ok(pb)
+    }
+}
+
+impl crate::process_checker::ProcessCheckerMachineClient for ProcessLoaderMachine {
+    fn done(
+        &self,
+        process_binary: &'static ProcessBinary,
+        result: Result<(), crate::process_checker::ProcessCheckError>,
+    ) {
+        match result {
+            Ok(()) => {
+                // Actually load the process
+            }
+            Err(e) => {
+                // Signal error and call try next
+            }
+        }
+
+        self.load_process_binary();
+        // Callback with error
+    }
 }

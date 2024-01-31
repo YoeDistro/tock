@@ -273,4 +273,8 @@ impl ProcessBinary {
 
         Ok(a)
     }
+
+    pub(crate) fn get_integrity_region_slice(&self) -> &'static [u8] {
+        unsafe { core::slice::from_raw_parts(self.flash.as_ptr(), self.header.get_binary_end()) }
+    }
 }
