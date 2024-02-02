@@ -545,28 +545,46 @@ fn load_process_binary(
     // Ok((remaining_flash, remaining_memory, process_option))
 }
 
-pub trait ProcessLoaderMachineClient {
+pub trait SequentialProcessLoaderMachineClient {
     fn process_loaded(&self, result: Result<(), ProcessLoadError>);
+
+    fn process_loading_finished(&self);
 }
 
-pub struct ProcessLoaderMachine {
+pub struct SequentialProcessLoaderMachine<C: Chip> {
     checker: &'static ProcessCheckerMachine,
     process_binary: OptionalCell<&'static mut ProcessBinary>,
 
+    kernel: &'static Kernel,
+    chip: &'static C,
+    app_memory: Cell<&'static mut [u8]>,
+
     procs: &'static mut [Option<&'static dyn Process>],
+    proc_index: Cell<usize>,
     flash: Cell<&'static [u8]>,
+    fault_policy: &'static dyn ProcessFaultPolicy,
 }
 
-impl ProcessLoaderMachine {
+impl<C: Chip> SequentialProcessLoaderMachine<C> {
     pub fn new(
         checker: &'static ProcessCheckerMachine,
         procs: &'static mut [Option<&'static dyn Process>],
+
+        kernel: &'static Kernel,
+        chip: &'static C,
         flash: &'static [u8],
+        app_memory: &'static mut [u8],
+        fault_policy: &'static dyn ProcessFaultPolicy,
     ) -> Self {
         Self {
             checker,
             procs,
+            kernel,
+            chip,
             flash: Cell::new(flash),
+            app_memory: Cell::new(app_memory),
+            proc_index: Cell::new(0),
+            fault_policy,
         }
     }
 
@@ -578,7 +596,7 @@ impl ProcessLoaderMachine {
         }
     }
 
-    pub fn load_process_binary(&self) -> Result<ProcessBinary, ProcessBinaryError> {
+    fn load_process_binary(&self) -> Result<ProcessBinary, ProcessBinaryError> {
         let flash = self.flash.get();
 
         if config::CONFIG.debug_load_processes {
@@ -638,9 +656,52 @@ impl ProcessLoaderMachine {
 
         Ok(pb)
     }
+
+    fn load_process_object(&self, process_binary: &'static ProcessBinary) {
+        let index = self.proc_index.get();
+
+        let load_result = load_process(
+            self.kernel,
+            self.chip,
+            process_binary,
+            self.app_memory.get(),
+            index,
+            self.fault_policy,
+        );
+        match load_result {
+            Ok((new_mem, proc)) => {
+                self.app_memory.set(new_mem);
+                if proc.is_some() {
+                    if config::CONFIG.debug_load_processes {
+                        proc.map(|p| debug!("Loaded process {}", p.get_process_name()));
+                    }
+                    self.procs[index] = proc;
+                    self.proc_index.increment();
+                    self.client.map(|client| {
+                        client.process_loaded(Ok(()));
+                    });
+                } else {
+                    if config::CONFIG.debug_load_processes {
+                        debug!("No process loaded.");
+                    }
+                }
+            }
+            Err((_new_mem, err)) => {
+                if config::CONFIG.debug_load_processes {
+                    debug!("No more processes to load: {:?}.", err);
+                }
+
+                self.client.map(|client| {
+                    client.process_loaded(Err(err));
+                });
+            }
+        }
+    }
 }
 
-impl crate::process_checker::ProcessCheckerMachineClient for ProcessLoaderMachine {
+impl<C: Chip> crate::process_checker::ProcessCheckerMachineClient
+    for SequentialProcessLoaderMachine<C>
+{
     fn done(
         &self,
         process_binary: &'static ProcessBinary,
@@ -649,13 +710,24 @@ impl crate::process_checker::ProcessCheckerMachineClient for ProcessLoaderMachin
         match result {
             Ok(()) => {
                 // Actually load the process
+                self.load_process_architecture(process_binary);
             }
             Err(e) => {
                 // Signal error and call try next
+                self.client.map(|client| {
+                    client.process_loaded(Err(ProcessLoadError::CheckError(e)));
+                });
             }
         }
 
-        self.load_process_binary();
-        // Callback with error
+        let ret = self.load_process_binary();
+        match ret {
+            Ok(pb) => self.checker.check(pb),
+            Err(e) => {
+                self.client.map(|client| {
+                    client.process_loaded(Err(ProcessLoadError::BinaryError(e)));
+                });
+            }
+        }
     }
 }
