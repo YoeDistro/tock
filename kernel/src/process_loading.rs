@@ -16,27 +16,19 @@ use crate::capabilities::{ProcessApprovalCapability, ProcessManagementCapability
 use crate::config;
 use crate::create_capability;
 use crate::debug;
+use crate::deferred_call::{DeferredCall, DeferredCallClient};
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::platform::platform::KernelResources;
 use crate::process::{Process, ShortID};
 use crate::process_binary::{ProcessBinary, ProcessBinaryError};
-use crate::process_checker::{AppCredentialsChecker, ProcessCheckerMachine};
+use crate::process_checker::{AppCredentialsChecker, ProcessCheckError, ProcessCheckerMachine};
 use crate::process_policies::ProcessFaultPolicy;
 use crate::process_standard::ProcessStandard;
 use crate::utilities::cells::OptionalCell;
 
 /// Errors that can occur when trying to load and create processes.
 pub enum ProcessLoadError {
-    /// No TBF header was found.
-    TbfHeaderNotFound,
-
-    /// The TBF header for the process could not be successfully parsed.
-    TbfHeaderParseFailure(tock_tbf::types::TbfParseError),
-
-    /// Not enough flash remaining to parse a process and its header.
-    NotEnoughFlash,
-
     /// Not enough memory to meet the amount requested by a process. Modify the
     /// process to request less memory, flash fewer processes, or increase the
     /// size of the region your board reserves for process memory.
@@ -52,47 +44,8 @@ pub enum ProcessLoadError {
     /// (current) MPU constraints and process requirements.
     MpuConfigurationError,
 
-    /// A process specified a fixed memory address that it needs its memory
-    /// range to start at, and the kernel did not or could not give the process
-    /// a memory region starting at that address.
-    MemoryAddressMismatch {
-        actual_address: u32,
-        expected_address: u32,
-    },
-
-    /// A process specified that its binary must start at a particular address,
-    /// and that is not the address the binary is actually placed at.
-    IncorrectFlashAddress {
-        actual_address: u32,
-        expected_address: u32,
-    },
-
-    /// A process requires a newer version of the kernel or did not specify
-    /// a required version. Processes can include the KernelVersion TBF header stating
-    /// their compatible kernel version (^major.minor).
-    ///
-    /// Boards may not require processes to include the KernelVersion TBF header, and
-    /// the kernel supports ignoring a missing KernelVersion TBF header. In that case,
-    /// this error will not be returned for a process missing a KernelVersion TBF
-    /// header.
-    ///
-    /// `version` is the `(major, minor)` kernel version the process indicates it
-    /// requires. If `version` is `None` then the process did not include the
-    /// KernelVersion TBF header.
-    IncompatibleKernelVersion { version: Option<(u16, u16)> },
-
-    /// The application checker requires credentials, but the TBF did
-    /// not include a credentials that meets the checker's
-    /// requirements. This can be either because the TBF has no
-    /// credentials or the checker policy did not accept any of the
-    /// credentials it has.
-    CredentialsNoAccept,
-
-    /// The process contained a credentials which was rejected by the verifier.
-    /// The u32 indicates which credentials was rejected: the first credentials
-    /// after the application binary is 0, and each subsequent credentials increments
-    /// this counter.
-    CredentialsReject(u32),
+    BinaryError(ProcessBinaryError),
+    CheckError(ProcessCheckError),
 
     /// Process loading error due (likely) to a bug in the kernel. If you get
     /// this error please open a bug report.
@@ -545,13 +498,23 @@ fn load_process_binary(
     // Ok((remaining_flash, remaining_memory, process_option))
 }
 
+/// Client for the sequential process loader.
+///
+/// This supports a client that is notified after trying to load each process in
+/// flash. Also there is a callback for after all processes have been
+/// discovered.
 pub trait SequentialProcessLoaderMachineClient {
+    /// A process was successfully found in flash, checked, and loaded into a
+    /// `ProcessStandard` object.
     fn process_loaded(&self, result: Result<(), ProcessLoadError>);
 
+    /// There are no more processes in flash to be loaded.
     fn process_loading_finished(&self);
 }
 
+/// A machine for loading processes stored sequentially in a region of flash.
 pub struct SequentialProcessLoaderMachine<C: Chip> {
+    deferred_call: DeferredCall,
     checker: &'static ProcessCheckerMachine,
     process_binary: OptionalCell<&'static mut ProcessBinary>,
 
@@ -577,6 +540,7 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
         fault_policy: &'static dyn ProcessFaultPolicy,
     ) -> Self {
         Self {
+            deferred_call: DeferredCall::new(),
             checker,
             procs,
             kernel,
@@ -588,11 +552,36 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
         }
     }
 
-    pub fn start(&self) -> Result<(), ProcessLoadError> {
+    /// Start loading processes from flash.
+    ///
+    /// This returns nothing as all operations are asynchronous and a callback
+    /// is guaranteed.
+    pub fn start(&self) {
+        // Start an asynchronous flow so we can issue a callback on error.
+        self.deferred_call.set();
+    }
+
+    fn load_and_check(&self) {
         let ret = self.load_process_binary();
         match ret {
             Ok(pb) => self.checker.check(pb),
-            Err(e) => ProcessLoadError::BinaryError(e),
+            Err(ProcessBinaryError::NotEnoughFlash)
+            | Err(ProcessBinaryError::TbfHeaderNotFound) => {
+                // These two errors occur when there are no more app binaries in
+                // flash. Since we didn't even have an app binary to load, we
+                // can signal that process loading is finished.
+                self.client.map(|client| {
+                    client.process_loading_finished();
+                });
+            }
+            Err(e) => {
+                // Other process binary errors indicate the process is not
+                // compatible. Signal error and try the next item in flash.
+                self.client.map(|client| {
+                    client.process_loaded(Err(ProcessLoadError::BinaryError(e)));
+                });
+                self.load_and_check();
+            }
         }
     }
 
@@ -649,10 +638,9 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
         let remaining_flash = flash
             .get(app_flash.len()..)
             .ok_or(ProcessBinaryError::NotEnoughFlash)?;
+        self.flash.set(remaining_flash);
 
         let pb = ProcessBinary::create(app_flash, header_length as usize, version, true)?;
-
-        self.flash.set(remaining_flash);
 
         Ok(pb)
     }
@@ -699,6 +687,17 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
     }
 }
 
+impl<C: Chip> DeferredCallClient for SequentialProcessLoaderMachine<C> {
+    fn handle_deferred_call(&self) {
+        // We use deferred calls to start the operation in the async loop.
+        self.load_and_check();
+    }
+
+    fn register(&'static self) {
+        self.deferred_call.register(self);
+    }
+}
+
 impl<C: Chip> crate::process_checker::ProcessCheckerMachineClient
     for SequentialProcessLoaderMachine<C>
 {
@@ -710,7 +709,7 @@ impl<C: Chip> crate::process_checker::ProcessCheckerMachineClient
         match result {
             Ok(()) => {
                 // Actually load the process
-                self.load_process_architecture(process_binary);
+                self.load_process_object(process_binary);
             }
             Err(e) => {
                 // Signal error and call try next
@@ -720,14 +719,7 @@ impl<C: Chip> crate::process_checker::ProcessCheckerMachineClient
             }
         }
 
-        let ret = self.load_process_binary();
-        match ret {
-            Ok(pb) => self.checker.check(pb),
-            Err(e) => {
-                self.client.map(|client| {
-                    client.process_loaded(Err(ProcessLoadError::BinaryError(e)));
-                });
-            }
-        }
+        // Try to load the next process in flash.
+        self.load_and_check();
     }
 }

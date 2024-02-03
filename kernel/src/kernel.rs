@@ -40,7 +40,6 @@ use crate::upcall::{Upcall, UpcallId};
 use crate::utilities::cells::{NumericCellExt, OptionalCell};
 
 use tock_tbf::types::TbfFooterV2Credentials;
-use tock_tbf::types::TbfParseError;
 
 /// Threshold in microseconds to consider a process's timeslice to be exhausted.
 /// That is, Tock will skip re-scheduling a process if its remaining timeslice
