@@ -250,18 +250,18 @@ enum FooterCheckResult {
 }
 
 impl ProcessCheckerMachine {
-    fn set_client(&self, client: &'static ProcessCheckerMachineClient) {
+    fn set_client(&self, client: &'static dyn ProcessCheckerMachineClient) {
         self.client.set(client);
     }
 
-    pub fn start(&self, process_binary: &'static ProcessBinary) {
+    pub fn check(&self, process_binary: &'static ProcessBinary) {
         self.footer_index.set(0);
         self.process_binary.set(process_binary);
-        self.check();
+        self.next();
     }
 
     /// Must be called from a callback context.
-    fn check(&self) {
+    fn next(&self) {
         loop {
             let policy = self.policy.get()?;
             let pb = self.process_binary.get();
@@ -444,7 +444,7 @@ impl ProcessCheckerMachine {
     }
 }
 
-impl process_checker::Client<'static> for ProcessCheckerMachine {
+impl Client<'static> for ProcessCheckerMachine {
     fn check_done(
         &self,
         result: Result<CheckResult, ErrorCode>,

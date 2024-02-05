@@ -513,7 +513,7 @@ pub trait SequentialProcessLoaderMachineClient {
 }
 
 /// A machine for loading processes stored sequentially in a region of flash.
-pub struct SequentialProcessLoaderMachine<C: Chip> {
+pub struct SequentialProcessLoaderMachine<C: Chip + 'static> {
     deferred_call: DeferredCall,
     checker: &'static ProcessCheckerMachine,
     process_binary: OptionalCell<&'static mut ProcessBinary>,
