@@ -77,6 +77,7 @@ use capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm;
 use capsules_extra::net::ieee802154::MacAddress;
 use capsules_extra::net::ipv6::ip_utils::IPAddr;
 use kernel::component::Component;
+use kernel::deferred_call::DeferredCallClient;
 use kernel::hil::led::LedLow;
 use kernel::hil::time::Counter;
 #[allow(unused_imports)]
@@ -271,7 +272,6 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
-    type CredentialsCheckingPolicy = ();
     type Scheduler = RoundRobinSched<'static>;
     type SchedulerTimer = cortexm4::systick::SysTick;
     type WatchDog = ();
@@ -284,9 +284,6 @@ impl KernelResources<nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'
         &()
     }
     fn process_fault(&self) -> &Self::ProcessFault {
-        &()
-    }
-    fn credentials_checking_policy(&self) -> &'static Self::CredentialsCheckingPolicy {
         &()
     }
     fn scheduler(&self) -> &Self::Scheduler {
@@ -887,6 +884,65 @@ pub unsafe fn start() -> (
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
+    // Create the software-based SHA engine.
+    let sha = components::sha::ShaSoftware256Component::new()
+        .finalize(components::sha_software_256_component_static!());
+
+    // Create the credential checker.
+    let checking_policy = components::appid::checker_sha::AppCheckerSha256Component::new(sha)
+        .finalize(components::app_checker_sha256_component_static!());
+
+    // Create the AppID assigner.
+    let assigner = components::appid::assigner_name::AppIdAssignerNamesComponent::new()
+        .finalize(components::appid_assigner_names_component_static!());
+
+    // Create the process checking machine.
+    let checker = components::appid::checker::ProcessCheckerMachineComponent::new(checking_policy)
+        .finalize(components::process_checker_machine_component_static!());
+
+    // These symbols are defined in the linker script.
+    extern "C" {
+        /// Beginning of the ROM region containing app images.
+        static _sapps: u8;
+        /// End of the ROM region containing app images.
+        static _eapps: u8;
+        /// Beginning of the RAM region for app memory.
+        static mut _sappmem: u8;
+        /// End of the RAM region for app memory.
+        static _eappmem: u8;
+    }
+
+    let process_binary_array = static_init!(
+        [Option<kernel::process::ProcessBinary>; NUM_PROCS],
+        [None, None, None, None, None, None, None, None]
+    );
+
+    let loader = static_init!(
+        kernel::process::SequentialProcessLoaderMachine<
+            nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
+        >,
+        kernel::process::SequentialProcessLoaderMachine::new(
+            checker,
+            &mut PROCESSES,
+            process_binary_array,
+            board_kernel,
+            chip,
+            core::slice::from_raw_parts(
+                &_sapps as *const u8,
+                &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            ),
+            core::slice::from_raw_parts_mut(
+                &mut _sappmem as *mut u8,
+                &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            ),
+            &FAULT_RESPONSE,
+            assigner,
+            &process_management_capability
+        )
+    );
+
+    checker.set_client(loader);
+
     let platform = Platform {
         button,
         ble_radio,
@@ -926,37 +982,40 @@ pub unsafe fn start() -> (
 
     // alarm_test_component.run();
 
-    // These symbols are defined in the linker script.
-    extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
-        /// Beginning of the RAM region for app memory.
-        static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
-        static _eappmem: u8;
-    }
+    // // These symbols are defined in the linker script.
+    // extern "C" {
+    //     /// Beginning of the ROM region containing app images.
+    //     static _sapps: u8;
+    //     /// End of the ROM region containing app images.
+    //     static _eapps: u8;
+    //     /// Beginning of the RAM region for app memory.
+    //     static mut _sappmem: u8;
+    //     /// End of the RAM region for app memory.
+    //     static _eappmem: u8;
+    // }
 
-    kernel::process::load_processes(
-        board_kernel,
-        chip,
-        core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-        ),
-        core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
-        ),
-        &mut PROCESSES,
-        &FAULT_RESPONSE,
-        &process_management_capability,
-    )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
+    // kernel::process::load_processes(
+    //     board_kernel,
+    //     chip,
+    //     core::slice::from_raw_parts(
+    //         &_sapps as *const u8,
+    //         &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+    //     ),
+    //     core::slice::from_raw_parts_mut(
+    //         &mut _sappmem as *mut u8,
+    //         &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+    //     ),
+    //     &mut PROCESSES,
+    //     &FAULT_RESPONSE,
+    //     &process_management_capability,
+    // )
+    // .unwrap_or_else(|err| {
+    //     debug!("Error loading processes!");
+    //     debug!("{:?}", err);
+    // });
+
+    loader.register();
+    loader.start();
 
     (board_kernel, platform, chip)
 }
