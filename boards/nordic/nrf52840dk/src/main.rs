@@ -943,7 +943,7 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
-    kernel::process::load_processes(
+    let remaining_memory = kernel::process::load_processes(
         board_kernel,
         chip,
         core::slice::from_raw_parts(
@@ -958,10 +958,28 @@ pub unsafe fn main() {
         &FAULT_RESPONSE,
         &process_management_capability,
     )
-    .unwrap_or_else(|err| {
+    .unwrap_or_else(|(err, remaining_memory)| {
         debug!("Error loading processes!");
         debug!("{:?}", err);
+        remaining_memory
     });
+
+    let dynamic_process_loader = static_init!(
+        kernel::process_load_utilities::DynamicProcessLoader<
+            nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>,
+        >,
+        kernel::process_load_utilities::DynamicProcessLoader::new(
+            &mut PROCESSES,
+            board_kernel,
+            chip,
+            core::slice::from_raw_parts(
+                &_sapps as *const u8,
+                &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            ),
+            remaining_memory,
+            &FAULT_RESPONSE,
+        )
+    );
 
     board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
 }
