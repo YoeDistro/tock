@@ -1,37 +1,118 @@
-//! Helper functions related to Tock processes by OTA_app. 
+// Licensed under the Apache License, Version 2.0 or the MIT License.
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+// Copyright Tock Contributors 2022.
+
+//! This provides kernel and userspace access to nonvolatile memory.
+//!
+//! This is an initial implementation that does not provide safety for
+//! individual userland applications. Each application has full access to
+//! the entire memory space that has been provided to userland. Future revisions
+//! should update this to limit applications to only their allocated regions.
+//!
+//! However, the kernel accessible memory does not have to be the same range
+//! as the userspace accessible address space. The kernel memory can overlap
+//! if desired, or can be a completely separate range.
+//!
+//! Here is a diagram of the expected stack with this capsule:
+//! Boxes are components and between the boxes are the traits that are the
+//! interfaces between components. This capsule provides both a kernel and
+//! userspace interface.
+//!
+//! ```text
+//! +--------------------------------------------+     +--------------+
+//! |                                            |     |              |
+//! |                  kernel                    |     |  userspace   |
+//! |                                            |     |              |
+//! +--------------------------------------------+     +--------------+
+//!  hil::nonvolatile_storage::NonvolatileStorage       kernel::Driver
+//! +-----------------------------------------------------------------+
+//! |                                                                 |
+//! | capsules::nonvolatile_storage_driver::NonvolatileStorage (this) |
+//! |                                                                 |
+//! +-----------------------------------------------------------------+
+//!            hil::nonvolatile_storage::NonvolatileStorage
+//! +-----------------------------------------------------------------+
+//! |                                                                 |
+//! |               Physical nonvolatile storage driver               |
+//! |                                                                 |
+//! +-----------------------------------------------------------------+
+//! ```
+//!
+//! Example instantiation:
+//!
+//! ```rust
+//! # use kernel::static_init;
+//!
+//! let nonvolatile_storage = static_init!(
+//!     capsules::nonvolatile_storage_driver::NonvolatileStorage<'static>,
+//!     capsules::nonvolatile_storage_driver::NonvolatileStorage::new(
+//!         fm25cl,                      // The underlying storage driver.
+//!         board_kernel.create_grant(&grant_cap),     // Storage for app-specific state.
+//!         3000,                        // The byte start address for the userspace
+//!                                      // accessible memory region.
+//!         2000,                        // The length of the userspace region.
+//!         0,                           // The byte start address of the region
+//!                                      // that is accessible by the kernel.
+//!         3000,                        // The length of the kernel region.
+//!         &mut capsules::nonvolatile_storage_driver::BUFFER));
+//! hil::nonvolatile_storage::NonvolatileStorage::set_client(fm25cl, nonvolatile_storage);
+//! ```
+
+use core::cell::Cell;
 use core::cmp;
 
-use crate::debug;
-use crate::config;
-use crate::kernel::Kernel;
-use crate::platform::chip::Chip;
-use crate::process::Process;
-use crate::process_policies::ProcessFaultPolicy;
-use crate::process_standard::ProcessStandard;
-use crate::process_loading::ProcessLoadError;
-use crate::capabilities::MemoryAllocationCapability;
-use crate::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
-use crate::syscall_driver::{CommandReturn, SyscallDriver};
-use crate::process::ProcessId;
-use crate::ErrorCode;
+use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
+use kernel::hil;
+use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
+use kernel::syscall::{CommandReturn, SyscallDriver};
+use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::{ErrorCode, ProcessId};
+// use kernel::debug;
 
-pub const DRIVER_NUM: usize = driver::NUM::AppLoader as usize;
+/// Syscall driver number.
+use capsules_core::driver;
+pub const DRIVER_NUM: usize = driver::NUM::NvmStorage as usize;
+
+/// IDs for subscribed upcalls.
+mod upcall {
+    /// Read done callback.
+    pub const READ_DONE: usize = 0;
+    /// Write done callback.
+    pub const WRITE_DONE: usize = 1;
+    /// Number of upcalls.
+    pub const COUNT: u8 = 2;
+}
+
+/// Ids for read-only allow buffers
+mod ro_allow {
+    /// Setup a buffer to write bytes to the nonvolatile storage.
+    pub const WRITE: usize = 0;
+    /// The number of allow buffers the kernel stores for this grant
+    pub const COUNT: u8 = 1;
+}
+
+/// Ids for read-write allow buffers
+mod rw_allow {
+    /// Setup a buffer to read from the nonvolatile storage into.
+    pub const READ: usize = 0;
+    /// The number of allow buffers the kernel stores for this grant
+    pub const COUNT: u8 = 1;
+}
 
 pub const BUF_LEN: usize = 512;
 
-
-mod ro_allow {
-    /// Ids for read-only allow buffers ('_' means no use)
-    pub(crate) const _WRITE: usize = 0;
-    /// The number of allow buffers the kernel stores for this grant
-    pub(crate) const COUNT: u8 = 1;
+#[derive(Clone, Copy, PartialEq)]
+pub enum NonvolatileCommand {
+    UserspaceRead,
+    UserspaceWrite,
+    KernelRead,
+    KernelWrite,
 }
 
-mod rw_allow {
-    /// Ids for read-write allow buffers ('_' means no use)
-    pub(crate) const _READ: usize = 0;
-    /// The number of allow buffers the kernel stores for this grant
-    pub(crate) const COUNT: u8 = 1;
+#[derive(Clone, Copy)]
+pub enum NonvolatileUser {
+    App { processid: ProcessId },
+    Kernel,
 }
 
 /// Variables that are stored in OTA_app grant region to support dynamic app load
@@ -40,237 +121,451 @@ struct ProcLoaderData{
     //Index points the position where the entry point of a new app is written into PROCESS global array 
     index: usize,
     // App size requested by ota app
-    appsize_requested_by_ota_app: usize,
+    rquested_app_size: usize,
     // dynamic_flash_start_addr points the start address that a new app will be loaded
     dynamic_flash_start_addr: usize,
     // dynamic_unsued_sram_start_addr points the start address that a new app will use
     dynamic_unsued_sram_start_addr: usize,
 }
 
-pub struct ProcessLoader <C:'static + Chip>{
-    kernel: &'static Kernel,
-    chip: &'static C, 
-    fault_policy: &'static dyn ProcessFaultPolicy,
-    process: *mut Option<&'static (dyn Process + 'static)>,
-    process_region_start_address: *mut usize,
-    process_region_size: *mut usize,
-    supported_process_num: usize,
-    start_app: usize, 
-    end_app: usize,
-    end_appmem: usize,
-    dynamic_unused_ram_start_addr_init_val: &'static usize,
-    index_init_val: &'static usize,
-    data: Grant<
-        ProcLoaderData,
-        UpcallCount<2>,
+pub struct App {
+    pending_command: bool,
+    command: NonvolatileCommand,
+    offset: usize,
+    length: usize,
+}
+
+impl Default for App {
+    fn default() -> App {
+        App {
+            pending_command: false,
+            command: NonvolatileCommand::UserspaceRead,
+            offset: 0,
+            length: 0,
+        }
+    }
+}
+
+pub struct DynamicProcessLoader<'a> {
+    // The underlying physical storage device.
+    driver: &'a dyn hil::nonvolatile_storage::NonvolatileStorage<'a>,
+    // Per-app state.
+    apps: Grant<
+        App,
+        UpcallCount<{ upcall::COUNT }>,
         AllowRoCount<{ ro_allow::COUNT }>,
         AllowRwCount<{ rw_allow::COUNT }>,
     >,
+
+    // Internal buffer for copying appslices into.
+    buffer: TakeCell<'static, [u8]>,
+    // What issued the currently executing call. This can be an app or the kernel.
+    current_user: OptionalCell<NonvolatileUser>,
+
+    // The first byte that is accessible from userspace.
+    userspace_start_address: usize,
+    // How many bytes allocated to userspace.
+    userspace_length: usize,
+    // The first byte that is accessible from the kernel.
+    kernel_start_address: usize,
+    // How many bytes allocated to kernel.
+    kernel_length: usize,
+
+    // Optional client for the kernel. Only needed if the kernel intends to use
+    // this nonvolatile storage.
+    kernel_client: OptionalCell<&'a dyn hil::nonvolatile_storage::NonvolatileStorageClient>,
+    // Whether the kernel is waiting for a read/write.
+    kernel_pending_command: Cell<bool>,
+    // Whether the kernel wanted a read/write.
+    kernel_command: Cell<NonvolatileCommand>,
+    // Holder for the buffer passed from the kernel in case we need to wait.
+    kernel_buffer: TakeCell<'static, [u8]>,
+    // How many bytes to read/write from the kernel buffer.
+    kernel_readwrite_length: Cell<usize>,
+    // Where to read/write from the kernel request.
+    kernel_readwrite_address: Cell<usize>,
+
+    // Supported number of process
+    supported_process_num: usize,
+    // Start address of a process loaded
+    process_region_start_address: &'static [usize],
+    // Size of a process loaded
+    process_region_size: &'static [usize],
 }
 
-impl <C:'static + Chip> ProcessLoader <C> {
-    pub fn init(
-        kernel: &'static Kernel,
-        chip: &'static C,
-        fault_policy: &'static dyn ProcessFaultPolicy,
-        memcapability: &dyn MemoryAllocationCapability,
-        process: *mut Option<&'static (dyn Process + 'static)>,
-        process_region_start_address: *mut usize,
-        process_region_size: *mut usize,
+impl<'a> DynamicProcessLoader<'a> {
+    pub fn new(
+        driver: &'a dyn hil::nonvolatile_storage::NonvolatileStorage<'a>,
+        grant: Grant<
+            App,
+            UpcallCount<{ upcall::COUNT }>,
+            AllowRoCount<{ ro_allow::COUNT }>,
+            AllowRwCount<{ rw_allow::COUNT }>,
+        >,
+        userspace_start_address: usize,
+        userspace_length: usize,
+        kernel_start_address: usize,
+        kernel_length: usize,
+        buffer: &'static mut [u8],
         supported_process_num: usize,
-        start_app: usize,
-        end_app: usize,
-        end_appmem: usize,
-        dynamic_unused_ram_start_addr_init_val: &'static usize,
-        index_init_val: &'static usize,
-    ) -> ProcessLoader <C> {
-        ProcessLoader {
-            kernel: kernel,
-            chip: chip, 
-            fault_policy: fault_policy,
-            process: process,
+        process_region_start_address: &'static [usize],
+        process_region_size: &'static [usize],
+    ) -> DynamicProcessLoader<'a> {
+        DynamicProcessLoader {
+            driver: driver,
+            apps: grant,
+            buffer: TakeCell::new(buffer),
+            current_user: OptionalCell::empty(),
+            userspace_start_address: userspace_start_address,
+            userspace_length: userspace_length,
+            kernel_start_address: kernel_start_address,
+            kernel_length: kernel_length,
+            kernel_client: OptionalCell::empty(),
+            kernel_pending_command: Cell::new(false),
+            kernel_command: Cell::new(NonvolatileCommand::KernelRead),
+            kernel_buffer: TakeCell::empty(),
+            kernel_readwrite_length: Cell::new(0),
+            kernel_readwrite_address: Cell::new(0),
+            supported_process_num: supported_process_num,
             process_region_start_address: process_region_start_address,
             process_region_size: process_region_size,
-            supported_process_num: supported_process_num,
-            start_app: start_app,
-            end_app: end_app,
-            end_appmem: end_appmem,
-            dynamic_unused_ram_start_addr_init_val: dynamic_unused_ram_start_addr_init_val,
-            index_init_val: index_init_val,
-            data: kernel.create_grant(DRIVER_NUM, memcapability),
         }
     }
 
-    // This function is implemented based on load_processes_advanced
-    // the purpose is to load an application flashed from OTA_app into PROCESS global array
-    fn load_ota_process_advanced(
+    // Check so see if we are doing something. If not, go ahead and do this
+    // command. If so, this is queued and will be run when the pending
+    // command completes.
+    fn enqueue_command(
         &self,
-        proc_data: &mut ProcLoaderData,
-    ) -> Result<(usize, Option<&'static dyn Process>), ProcessLoadError> { 
-
-        let appstart = proc_data.dynamic_flash_start_addr as *const u8;
-        let appsramstart = proc_data.dynamic_unsued_sram_start_addr as *mut u8;
-        
-        let mut sram_end_addresses = 0;
-        let mut process_copy: Option<&'static dyn Process> = None;
-
-        //Todo: self.eapps has to be replaced by the end address of the flahsed app? (can reduce the ram usage)
-        let remaining_flash =  unsafe {
-            core::slice::from_raw_parts(
-            appstart,
-            self.end_app - appstart as usize,
-        )};
-
-        let remaining_memory = unsafe {
-            core::slice::from_raw_parts_mut(
-            appsramstart,
-            self.end_appmem - appsramstart as usize,
-        )};
-
-        if proc_data.index < self.supported_process_num 
-        {        
-            // Get the first eight bytes of flash to check if there is another app.
-             let test_header_slice = match remaining_flash.get(0..8) {
-                Some(s) => s,
-                None => {
-                    // Not enough flash to test for another app. This just means
-                    // we are at the end of flash, and there are no more apps to
-                    // load. => This case is error in loading app by ota_app, because it means that there is no valid tbf header!
-                    return Err(ProcessLoadError::InternalError);
-                }
-            };
-    
-            // Pass the first eight bytes to tbfheader to parse out the length of
-            // the tbf header and app. We then use those values to see if we have
-            // enough flash remaining to parse the remainder of the header.
-            let (version, header_length, entry_length) = match tock_tbf::parse::parse_tbf_header_lengths(
-                test_header_slice
-                    .try_into()
-                    .or(Err(ProcessLoadError::InternalError))?,
-            ) {
-                Ok((v, hl, el)) => (v, hl, el),
-                Err(tock_tbf::types::InitialTbfParseError::InvalidHeader(_entry_length)) => {
-                    // If we could not parse the header, then we want to skip over
-                    // this app and look for the next one. => This case is error in loading app by ota_app
-                    return Err(ProcessLoadError::InternalError);
-                }
-                Err(tock_tbf::types::InitialTbfParseError::UnableToParse) => {
-                    // Since Tock apps use a linked list, it is very possible the
-                    // header we started to parse is intentionally invalid to signal
-                    // the end of apps. This is ok and just means we have finished
-                    // loading apps. => This case is error in loading app by ota_app
-                    return Err(ProcessLoadError::InternalError);
-                }
-            };
-
-            // Now we can get a slice which only encompasses the length of flash
-            // described by this tbf header.  We will either parse this as an actual
-            // app, or skip over this region.
-            let entry_flash = remaining_flash
-                .get(0..entry_length as usize)
-                .ok_or(ProcessLoadError::NotEnoughFlash)?;
-
-            // Need to reassign remaining_memory in every iteration so the compiler
-            // knows it will not be re-borrowed.
-            if header_length > 0 
-            {
-                // If we found an actual app header, try to create a `Process`
-                // object. We also need to shrink the amount of remaining memory
-                // based on whatever is assigned to the new process if one is
-                // created.
-        
-                // Try to create a process object from that app slice. If we don't
-                // get a process and we didn't get a loading error (aka we got to
-                // this point), then the app is a disabled process or just padding.
-                let (process_option, _unused_memory) = unsafe {
-                    let result = ProcessStandard::create(
-                        self.kernel,
-                        self.chip,
-                        entry_flash,
-                        header_length as usize,
-                        version,
-                        remaining_memory,
-                        self.fault_policy,
-                        true,
-                        proc_data.index,
-                    );
-                    match result {
-                        Ok(tuple) => tuple,
-                        Err((err, _memory)) => {
-                            return Err(err);
-                        }
-                    }
-                };
-                process_option.map(|process| {
-                    if config::CONFIG.debug_load_processes {
-                        let addresses = process.get_addresses();
-                            debug!(
-                            "Loaded process[{}] from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X} = {:?}",
-                            proc_data.index,
-                            entry_flash.as_ptr() as usize,
-                            entry_flash.as_ptr() as usize + entry_flash.len() - 1,
-                            addresses.sram_start,
-                            addresses.sram_end - 1,
-                            process.get_process_name()
-                        );
-                    }
-                    
-                    //we return sram_end_addresses
-                    let addresses = process.get_addresses();
-                    sram_end_addresses = addresses.sram_end;
-
-                    //we return process_copy
-                    process_copy = Some(process);
-                });
-            }
-            else {
-                //header length 0 means invalid header
-                return Err(ProcessLoadError::InternalError);
-            }
-        }
-
-        Ok((sram_end_addresses, process_copy))
-    }
-
-    // In order to match the result value of command
-    fn load_ota_process(
-        &self,
-        proc_data: &mut ProcLoaderData,
+        command: NonvolatileCommand,
+        offset: usize,
+        length: usize,
+        processid: Option<ProcessId>,
     ) -> Result<(), ErrorCode> {
-        
-        let res = self.load_ota_process_advanced(proc_data);
-
-        // Without alignment error, we only store the entry point, the start address, and the size of the flashed application
-        match res{
-            Ok((sram_end, process_copy)) => {
-                // This variable will be used, when loading the another app at next load work by ota app
-                // This is necessary to prevent the access violation of sram memory whilch are already used by kernel and other apps.
-                proc_data.dynamic_unsued_sram_start_addr = sram_end;
-                
-                // Store the entry point, the start address, and the size of the flashed application into PROCESS global array
-                // Although I used unsafe keyword, I think it's okay, becasue we pass the exact pointer of PROCESS global array
-                unsafe {
-                    *self.process.offset(proc_data.index.try_into().unwrap()) = process_copy;
-
-                    // We also save process region information to check the validity of 'proc_data.dynamic_flash_start_addr' in future load work
-                    *self.process_region_start_address.offset(proc_data.index.try_into().unwrap()) = proc_data.dynamic_flash_start_addr;
-                    *self.process_region_size.offset(proc_data.index.try_into().unwrap()) = proc_data.appsize_requested_by_ota_app;
+        // Do bounds check.
+        match command {
+            NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
+                // Userspace sees memory that starts at address 0 even if it
+                // is offset in the physical memory.
+                if offset >= self.userspace_length
+                    || length > self.userspace_length
+                    || offset + length > self.userspace_length
+                {
+                    return Err(ErrorCode::INVAL);
                 }
-
-                // We increase the index for next load work by OTA app
-                proc_data.index += 1;
-
-                return Ok(());
             }
-            Err(_e) => {
-                // If there is an error caused by misalignment,
-                // 'proc_data.dynamic_unsued_sram_start_addr' and 'proc_data.index' will hold current unused sram start address
-                return Err(ErrorCode::FAIL);
+            NonvolatileCommand::KernelRead | NonvolatileCommand::KernelWrite => {
+                // Because the kernel uses the NonvolatileStorage interface,
+                // its calls are absolute addresses.
+                if offset < self.kernel_start_address
+                    || offset >= self.kernel_start_address + self.kernel_length
+                    || length > self.kernel_length
+                    || offset + length > self.kernel_start_address + self.kernel_length
+                {
+                    return Err(ErrorCode::INVAL);
+                }
+            }
+        }
+
+        // Do very different actions if this is a call from userspace
+        // or from the kernel.
+        match command {
+            NonvolatileCommand::UserspaceRead | NonvolatileCommand::UserspaceWrite => {
+                processid.map_or(Err(ErrorCode::FAIL), |processid| {
+                    self.apps
+                        .enter(processid, |app, kernel_data| {
+                            // Get the length of the correct allowed buffer.
+                            let allow_buf_len = match command {
+                                NonvolatileCommand::UserspaceRead => kernel_data
+                                    .get_readwrite_processbuffer(rw_allow::READ)
+                                    .map_or(0, |read| read.len()),
+                                NonvolatileCommand::UserspaceWrite => kernel_data
+                                    .get_readonly_processbuffer(ro_allow::WRITE)
+                                    .map_or(0, |read| read.len()),
+                                _ => 0,
+                            };
+
+                            // Check that it exists.
+                            if allow_buf_len == 0 || self.buffer.is_none() {
+                                return Err(ErrorCode::RESERVE);
+                            }
+
+                            // Shorten the length if the application gave us nowhere to
+                            // put it.
+                            let active_len = cmp::min(length, allow_buf_len);
+
+                            // First need to determine if we can execute this or must
+                            // queue it.
+                            if self.current_user.is_none() {
+                                // No app is currently using the underlying storage.
+                                // Mark this app as active, and then execute the command.
+                                self.current_user.set(NonvolatileUser::App {
+                                    processid: processid,
+                                });
+
+                                // Need to copy bytes if this is a write!
+                                if command == NonvolatileCommand::UserspaceWrite {
+                                    let _ = kernel_data
+                                        .get_readonly_processbuffer(ro_allow::WRITE)
+                                        .and_then(|write| {
+                                            write.enter(|app_buffer| {
+                                                self.buffer.map(|kernel_buffer| {
+                                                    // Check that the internal buffer and the buffer that was
+                                                    // allowed are long enough.
+                                                    let write_len =
+                                                        cmp::min(active_len, kernel_buffer.len());
+
+                                                    let d = &app_buffer[0..write_len];
+                                                    for (i, c) in kernel_buffer[0..write_len]
+                                                        .iter_mut()
+                                                        .enumerate()
+                                                    {
+                                                        *c = d[i].get();
+                                                    }
+                                                });
+                                            })
+                                        });
+                                }
+
+                                self.userspace_call_driver(command, offset, active_len)
+                            } else {
+                                // Some app is using the storage, we must wait.
+                                if app.pending_command == true {
+                                    // No more room in the queue, nowhere to store this
+                                    // request.
+                                    Err(ErrorCode::NOMEM)
+                                } else {
+                                    // We can store this, so lets do it.
+                                    app.pending_command = true;
+                                    app.command = command;
+                                    app.offset = offset;
+                                    app.length = active_len;
+                                    Ok(())
+                                }
+                            }
+                        })
+                        .unwrap_or_else(|err| Err(err.into()))
+                })
+            }
+            NonvolatileCommand::KernelRead | NonvolatileCommand::KernelWrite => {
+                self.kernel_buffer
+                    .take()
+                    .map_or(Err(ErrorCode::NOMEM), |kernel_buffer| {
+                        let active_len = cmp::min(length, kernel_buffer.len());
+
+                        // Check if there is something going on.
+                        if self.current_user.is_none() {
+                            // Nothing is using this, lets go!
+                            self.current_user.set(NonvolatileUser::Kernel);
+
+                            match command {
+                                NonvolatileCommand::KernelRead => {
+                                    self.driver.read(kernel_buffer, offset, active_len)
+                                }
+                                NonvolatileCommand::KernelWrite => {
+                                    self.driver.write(kernel_buffer, offset, active_len)
+                                }
+                                _ => Err(ErrorCode::FAIL),
+                            }
+                        } else {
+                            if self.kernel_pending_command.get() == true {
+                                Err(ErrorCode::NOMEM)
+                            } else {
+                                self.kernel_pending_command.set(true);
+                                self.kernel_command.set(command);
+                                self.kernel_readwrite_length.set(active_len);
+                                self.kernel_readwrite_address.set(offset);
+                                self.kernel_buffer.replace(kernel_buffer);
+                                Ok(())
+                            }
+                        }
+                    })
             }
         }
     }
-    
-    // This function is implemented based on load_processes_advanced
+
+    fn userspace_call_driver(
+        &self,
+        command: NonvolatileCommand,
+        offset: usize,
+        length: usize,
+    ) -> Result<(), ErrorCode> {
+        // Calculate where we want to actually read from in the physical
+        // storage.
+        let physical_address = offset + self.userspace_start_address;
+
+        self.buffer
+            .take()
+            .map_or(Err(ErrorCode::RESERVE), |buffer| {
+                // Check that the internal buffer and the buffer that was
+                // allowed are long enough.
+                let active_len = cmp::min(length, buffer.len());
+
+                // self.current_app.set(Some(processid));
+                match command {
+                    NonvolatileCommand::UserspaceRead => {
+                        self.driver.read(buffer, physical_address, active_len)
+                    }
+                    NonvolatileCommand::UserspaceWrite => {
+                        self.driver.write(buffer, physical_address, active_len)
+                    }
+                    _ => Err(ErrorCode::FAIL),
+                }
+            })
+    }
+
+    fn check_queue(&self) {
+        // Check if there are any pending events.
+        if self.kernel_pending_command.get() {
+            self.kernel_buffer.take().map(|kernel_buffer| {
+                self.kernel_pending_command.set(false);
+                self.current_user.set(NonvolatileUser::Kernel);
+
+                match self.kernel_command.get() {
+                    NonvolatileCommand::KernelRead => self.driver.read(
+                        kernel_buffer,
+                        self.kernel_readwrite_address.get(),
+                        self.kernel_readwrite_length.get(),
+                    ),
+                    NonvolatileCommand::KernelWrite => self.driver.write(
+                        kernel_buffer,
+                        self.kernel_readwrite_address.get(),
+                        self.kernel_readwrite_length.get(),
+                    ),
+                    _ => Err(ErrorCode::FAIL),
+                }
+            });
+        } else {
+            // If the kernel is not requesting anything, check all of the apps.
+            for cntr in self.apps.iter() {
+                let processid = cntr.processid();
+                let started_command = cntr.enter(|app, _| {
+                    if app.pending_command {
+                        app.pending_command = false;
+                        self.current_user.set(NonvolatileUser::App {
+                            processid: processid,
+                        });
+                        if let Ok(()) =
+                            self.userspace_call_driver(app.command, app.offset, app.length)
+                        {
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                });
+                if started_command {
+                    break;
+                }
+            }
+        }
+    }
+
+    fn check_offset_is_in_processes(
+        &self,
+        offset: usize,
+    ) -> Result<(), ErrorCode> {
+
+        // debug!("offset: {}", offset);
+
+        let mut index = 0;
+
+        while index < self.supported_process_num
+        {
+            //We only refer to the two arrays
+            let process_start_address =  self.process_region_start_address[index];
+            let process_end_address = self.process_region_start_address[index] + self.process_region_size[index];
+            // debug!("Process start address: {}, process end address: {}", process_start_address, process_end_address);
+
+            let target = self.userspace_start_address + offset;
+            // debug!("userspace address: {}", self.userspace_start_address);
+            // debug!("target address: {}", target);
+
+            if target >= process_start_address && target < process_end_address
+            {
+                return Err(ErrorCode::INVAL);
+            }
+
+            index += 1;
+
+            // debug!("Index: {}", index);
+        }
+
+        return Ok(());
+    }
+}
+
+/// This is the callback client for the underlying physical storage driver.
+impl hil::nonvolatile_storage::NonvolatileStorageClient for NonvolatileStorage<'_> {
+    fn read_done(&self, buffer: &'static mut [u8], length: usize) {
+        // Switch on which user of this capsule generated this callback.
+        self.current_user.take().map(|user| {
+            match user {
+                NonvolatileUser::Kernel => {
+                    self.kernel_client.map(move |client| {
+                        client.read_done(buffer, length);
+                    });
+                }
+                NonvolatileUser::App { processid } => {
+                    let _ = self.apps.enter(processid, move |_, kernel_data| {
+                        // Need to copy in the contents of the buffer
+                        let _ = kernel_data
+                            .get_readwrite_processbuffer(rw_allow::READ)
+                            .and_then(|read| {
+                                read.mut_enter(|app_buffer| {
+                                    let read_len = cmp::min(app_buffer.len(), length);
+
+                                    let d = &app_buffer[0..(read_len as usize)];
+                                    for (i, c) in buffer[0..read_len].iter().enumerate() {
+                                        d[i].set(*c);
+                                    }
+                                })
+                            });
+
+                        // Replace the buffer we used to do this read.
+                        self.buffer.replace(buffer);
+
+                        // And then signal the app.
+                        kernel_data
+                            .schedule_upcall(upcall::READ_DONE, (length, 0, 0))
+                            .ok();
+                    });
+                }
+            }
+        });
+
+        self.check_queue();
+    }
+
+    fn write_done(&self, buffer: &'static mut [u8], length: usize) {
+        // Switch on which user of this capsule generated this callback.
+        self.current_user.take().map(|user| {
+            match user {
+                NonvolatileUser::Kernel => {
+                    self.kernel_client.map(move |client| {
+                        client.write_done(buffer, length);
+                    });
+                }
+                NonvolatileUser::App { processid } => {
+                    let _ = self.apps.enter(processid, move |_app, kernel_data| {
+                        // Replace the buffer we used to do this write.
+                        self.buffer.replace(buffer);
+
+                        // And then signal the app.
+                        kernel_data
+                            .schedule_upcall(upcall::WRITE_DONE, (length, 0, 0))
+                            .ok();
+                    });
+                }
+            }
+        });
+
+        self.check_queue();
+    }
+
+     // This function is implemented based on load_processes_advanced
     // the purpose is to parse the dynamically changing start address of flash memory satisfying MPU rules
     fn find_dynamic_start_address_of_writable_flash_advanced(
         &self,
@@ -316,7 +611,7 @@ impl <C:'static + Chip> ProcessLoader <C> {
                         let mut index = 0;
                         while index < proc_data.index
                         {
-                            if proc_data.dynamic_flash_start_addr == unsafe { *self.process_region_start_address.offset(index.try_into().unwrap()) }
+                            if proc_data.dynamic_flash_start_addr == unsafe { *self.ptr_process_region_start_address.offset(index.try_into().unwrap()) }
                             {
                                 // If we found this is the remnant region(app), we save the new app from here.
                                 // Before return Ok, do validity check
@@ -514,8 +809,8 @@ impl <C:'static + Chip> ProcessLoader <C> {
 
         while index < proc_data.index
         {
-            let process_start_address = unsafe { *self.process_region_start_address.offset(index.try_into().unwrap()) };
-            let process_end_address = unsafe{ (*self.process_region_start_address.offset(index.try_into().unwrap()) + *self.process_region_size.offset(index.try_into().unwrap())) -1};
+            let process_start_address = unsafe { *self.ptr_process_region_start_address.offset(index.try_into().unwrap()) };
+            let process_end_address = unsafe{ (*self.ptr_process_region_start_address.offset(index.try_into().unwrap()) + *self.ptr_process_region_size.offset(index.try_into().unwrap())) -1};
 
             debug!("process_start_address, process_end_address, {:#010X} {:#010X}", process_start_address, process_end_address);
             debug!("new_process_start_address, new_process_end_address, {:#010X} {:#010X}", new_process_start_address, new_process_end_address);
@@ -632,246 +927,86 @@ impl <C:'static + Chip> ProcessLoader <C> {
         return Ok(version as u32);
     }
 
-    fn check_offset_is_in_processes(
+    fn get_flash_addr_and_len(
         &self,
-        offset: usize,
+        app_size: usize
     ) -> Result<(), ErrorCode> {
-
-        // debug!("offset: {}", offset);
-
-        let mut index = 0;
-
-        while index < self.supported_process_num
-        {
-            //We only refer to the two arrays
-            let process_start_address =  self.process_region_start_address[index];
-            let process_end_address = self.process_region_start_address[index] + self.process_region_size[index];
-            // debug!("Process start address: {}, process end address: {}", process_start_address, process_end_address);
-
-            let target = self.userspace_start_address + offset;
-            // debug!("userspace address: {}", self.userspace_start_address);
-            // debug!("target address: {}", target);
-
-            if target >= process_start_address && target < process_end_address
-            {
-                return Err(ErrorCode::INVAL);
-            }
-
-            index += 1;
-
-            // debug!("Index: {}", index);
-        }
-
-        return Ok(());
+        
     }
+
 }
 
-/// Provide an interface for the kernel.
-impl<'a> hil::nonvolatile_storage::NonvolatileStorage<'a> for NonvolatileStorage<'a> {
-    fn set_client(&self, client: &'a dyn hil::nonvolatile_storage::NonvolatileStorageClient) {
-        self.kernel_client.set(client);
-    }
+// /// Provide an interface for the kernel.
+// impl<'a> hil::nonvolatile_storage::NonvolatileStorage<'a> for NonvolatileStorage<'a> {
+//     fn set_client(&self, client: &'a dyn hil::nonvolatile_storage::NonvolatileStorageClient) {
+//         self.kernel_client.set(client);
+//     }
 
-    fn read(
-        &self,
-        buffer: &'static mut [u8],
-        address: usize,
-        length: usize,
-    ) -> Result<(), ErrorCode> {
-        self.kernel_buffer.replace(buffer);
-        self.enqueue_command(NonvolatileCommand::KernelRead, address, length, None)
-    }
+//     fn read(
+//         &self,
+//         buffer: &'static mut [u8],
+//         address: usize,
+//         length: usize,
+//     ) -> Result<(), ErrorCode> {
+//         self.kernel_buffer.replace(buffer);
+//         self.enqueue_command(NonvolatileCommand::KernelRead, address, length, None)
+//     }
 
-    fn write(
-        &self,
-        buffer: &'static mut [u8],
-        address: usize,
-        length: usize,
-    ) -> Result<(), ErrorCode> {
-        self.kernel_buffer.replace(buffer);
-        self.enqueue_command(NonvolatileCommand::KernelWrite, address, length, None)
-    }
-}
+//     fn write(
+//         &self,
+//         buffer: &'static mut [u8],
+//         address: usize,
+//         length: usize,
+//     ) -> Result<(), ErrorCode> {
+//         self.kernel_buffer.replace(buffer);
+//         self.enqueue_command(NonvolatileCommand::KernelWrite, address, length, None)
+//     }
+// }
 
-impl <C:'static + Chip> SyscallDriver for ProcessLoader <C> {
+/// Provide an interface for userland.
+impl SyscallDriver for DynamicProcessLoader<'_> {
+    /// Command interface.
+    ///
+    /// Commands are selected by the lowest 8 bits of the first argument.
+    ///
     /// ### `command_num`
     ///
-    /// - `0`: Driver check, always returns Ok(())
-    /// - `1`: Perform loading an process flashed from OTA_app and write the entry point of the process into PROCESS global array
-    /// - `2`: Perform finding dynamically changing start address of writable flash memory based on MPU rules
-    /// - `3`: Return the dynamically changing start address after commnad 2 in order to control offset of flash region from 'ota_app'
-    /// - `4`: Initialize 'proc_data.dynamic_unsued_sram_start_addr' and 'proc_data.index' with sram_end_address and index returned from load_processes_advanced respectively
-    ///        This initial values come from the result value of 'kernel::process::load_processes' at main.rs (This commnad is only executed one time at OTA_app init stage)
-    ///        This inital value is copied to internal grant variables, and this grant variables is used in 'fn load_ota_process_advanced' and updated after loading an application
-    ///        Note that we don't have to interrupt the sram region already used by kernel and other apps
-    /// - `5`: Calculate CRC32-POXIS of the flashed app region and return the result value
-    /// - `6`: Return an index that is used to store the entry point of an app flashed into PROCESS global array
-    ///        With this index, we prevent the kernel from loading 4 more than applications
-    /// - `7`: Return the start address of flash memory allocated to apps (i.e., 0x40000 in case of this platform)
-    /// - `8`: Return the end address of flash memory allocated to apps (i.e., 0x40000 in case of this platform)
-    /// - `9`: Return the number of supported process by platform (e.g., 4 in case of microbit_v2)
-    /// - `10`: Return the start address of a process
-    /// - `11`: Return the size of a process
-    /// - `12`: Return kernel version
-    /// - `13`: Return padding app header length
-    
-    
+    /// - `0`: Return Ok(()) if this driver is included on the platform.
+    /// - `1`: Return the number of bytes available to userspace.
+    /// - `2`: Start a read from the nonvolatile storage.
+    /// - `3`: Start a write to the nonvolatile_storage.
     fn command(
         &self,
         command_num: usize,
-        arg1: usize,            // offset for nonvol
-        arg2: usize,            // len for nonvol
-        appid: ProcessId,
+        arg1: usize,        // offset for nonvol
+        arg2: usize,      // length for nonvol
+        processid: ProcessId,
     ) -> CommandReturn {
-        // debug!("Proc Load Util invoked!");
         match command_num {
             0 => CommandReturn::success(),
-            
-            1 =>
-            /* perform load process work */
-            {
-                let res = self.data.enter(appid, |proc_data, _| {
-                    self.load_ota_process(proc_data)
-                })
-                .map_err(ErrorCode::from);
-        
-                match res {
-                    Ok(Ok(())) => CommandReturn::success(),
-                    Ok(Err(e)) => CommandReturn::failure(e),
-                    Err(e) => CommandReturn::failure(e),
-                }
+
+            1 => {
+                // provide with app name and size
+                let res = self.get_flash_addr_and_len(arg2)
             }
 
-            2 =>
-            /* find dynamically changing start address of writable flash memory based on MPU rules */
-            {   
-                let res = self.data.enter(appid, |proc_data, _| {
-                    proc_data.appsize_requested_by_ota_app = arg1;
-                    self.find_dynamic_start_address_of_writable_flash(proc_data)
-                })
-                .map_err(ErrorCode::from);
-        
-                match res {
-                    Ok(Ok(())) => CommandReturn::success(),
-                    Ok(Err(e)) => CommandReturn::failure(e),
-                    Err(e) => CommandReturn::failure(e),
-                }
+            2 => {
+                // write app to flash
+
             }
 
-            3 =>
-            /* Return the dynamically changing start address after commnad 2 */
-            {
-                self.data.enter(appid, |proc_data, _| {
-                    CommandReturn::success_u32(proc_data.dynamic_flash_start_addr as u32)
-                })
-                .unwrap_or(CommandReturn::failure(ErrorCode::FAIL))
-            }
-
-            /* Initialize 'proc_data.dynamic_unsued_sram_start_addr' and 'proc_data.index' with sram_end_address and index returned from load_processes_advanced respectively */
-            4 =>
-            {
-                let res = self.data.enter(appid, |proc_data, _| {
-                    proc_data.dynamic_unsued_sram_start_addr = *self.dynamic_unused_ram_start_addr_init_val;
-                    proc_data.index = *self.index_init_val;
-                })
-                .map_err(ErrorCode::from);
-        
-                match res {
-                    Ok(()) => CommandReturn::success(),
-                    Err(e) => CommandReturn::failure(e),
-                }
-            }
-
-            5 =>
-            /* Calculate CRC32-POXIS of the flashed app region and return the result value */
-            {
-                let start_address = arg1;
-                let mode = arg2;
-
-                debug!("\tComputing crc32 at kernel\n");
-                // debug!("\tStart address : {} and mode: {}", start_address, mode);
-
-                let crc32 = self.cal_crc32_posix(start_address, mode);
-                // debug!("crc value at kernel is: {}", crc32);
-                CommandReturn::success_u32(crc32 as u32)
-            }
-
-            6 =>
-            /* Return index that is used to store the entry point of an app flashed */
-            {
-                self.data.enter(appid, |proc_data, _| {
-                    CommandReturn::success_u32(proc_data.index as u32)
-                })
-                .unwrap_or(CommandReturn::failure(ErrorCode::FAIL))
-            }
-
-            /* Return the start address of flash memory allocated to apps (i.e., 0x40000 in case of this platform)  */
-            7 =>
-            {
-                CommandReturn::success_u32(self.start_app as u32)
-            }
-
-            /* Return the end address of flash memory allocated to apps (i.e., 0x80000 in case of this platform)  */
-            8 =>
-            {
-                CommandReturn::success_u32(self.end_app as u32)
-            }
-
-            /* Return the number of supported process by platform (e.g., 4 in case of microbit_v2)  */
-            9 =>
-            {
-                CommandReturn::success_u32(self.supported_process_num as u32)
-            }
-
-            /* Return the start address of a process  */
-            10 =>
-            {
-                let requested_index = arg1;
-                let start_addr = unsafe { *self.process_region_start_address.offset(requested_index.try_into().unwrap()) };
-
-                CommandReturn::success_u32(start_addr as u32)
-            }
-
-            /* Return the size of a process  */
-            11 =>
-            {
-                let requested_index = arg1;
-                let size = unsafe { *self.process_region_size.offset(requested_index.try_into().unwrap()) };
-
-                CommandReturn::success_u32(size as u32)
-            }
-
-            /* Return kernel version  */
-            12 =>
-            {
-                let res = self.kernel_version();
-
-                match res {
-                    Ok(kernel_version) => CommandReturn::success_u32(kernel_version),
-                    Err(e) => CommandReturn::failure(e),
-                }       
-            }
-
-            /* Return padding app header length  */
-            13 =>
-            {
-                CommandReturn::success_u32(16 as u32)    
-            }
-
-            // Nonvolatile Commands
-
-            14 => {
-                // How many bytes are accessible from userspace
+            1 => {
+                // How many bytes are accessible from userspace 
                 // TODO: Would break on 64-bit platforms
                 CommandReturn::success_u32(self.userspace_length as u32)
             }
 
-            15 => {
+            2 => {
                 // Issue a read command
                 let res = self.enqueue_command(
                     NonvolatileCommand::UserspaceRead,
-                    offset,
-                    length,
+                    arg1,
+                    arg2,
                     Some(processid),
                 );
 
@@ -881,9 +1016,22 @@ impl <C:'static + Chip> SyscallDriver for ProcessLoader <C> {
                 }
             }
 
-            16 => {
+            3 => {
+                // Issue a write command
+                //     let res = self.enqueue_command(
+                //         NonvolatileCommand::UserspaceWrite,
+                //         offset,
+                //         length,
+                //         Some(processid),
+                //     );
 
-                let offset_validity = self.check_offset_is_in_processes(offset);
+                //     match res {
+                //         Ok(()) => CommandReturn::success(),
+                //         Err(e) => CommandReturn::failure(e),
+                //     }
+                // }
+
+                let offset_validity = self.check_offset_is_in_processes(arg1);
                 // debug!("offset: {}, length: {}, pid: {:?}", offset, length, processid);
                 // debug!("Offset validity: {:?}",offset_validity);
                 match offset_validity {
@@ -891,8 +1039,8 @@ impl <C:'static + Chip> SyscallDriver for ProcessLoader <C> {
                         let res =
                             self.enqueue_command(
                                 NonvolatileCommand::UserspaceWrite,
-                                offset,
-                                length,
+                                arg1,
+                                arg2,
                                 Some(processid),
                             );
                             // debug!("write command result: {:?}",res);
@@ -906,11 +1054,27 @@ impl <C:'static + Chip> SyscallDriver for ProcessLoader <C> {
                 }
             }
 
+            4 => {
+                //Find the start address and length dedicated for the process out writable flash */
+                let res = self.data.enter(appid, |proc_data, _| {
+                    proc_data.appsize_requested_by_ota_app = arg1;
+                    self.find_dynamic_start_address_of_writable_flash(proc_data)
+                })
+                .map_err(ErrorCode::from);
+        
+                match res {
+                    Ok(Ok(())) => CommandReturn::success(),
+                    Ok(Err(e)) => CommandReturn::failure(e),
+                    Err(e) => CommandReturn::failure(e),
+                }
+
+            }
+
             _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
         }
     }
 
-    fn allocate_grant(&self, processid: ProcessId) -> Result<(), crate::process::Error> {
-        self.data.enter(processid, |_, _| {})
+    fn allocate_grant(&self, processid: ProcessId) -> Result<(), kernel::process::Error> {
+        self.apps.enter(processid, |_, _| {})
     }
 }
