@@ -200,11 +200,11 @@ pub fn load_and_check_processes<KR: KernelResources<C>, C: Chip>(
     mut procs: &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
     _capability_management: &dyn ProcessManagementCapability,
-) -> Result<(), ProcessLoadError>
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])>
 where
     <KR as KernelResources<C>>::CredentialsCheckingPolicy: 'static,
 {
-    load_processes_from_flash(
+    let remaining_memory = load_processes_from_flash(
         kernel,
         chip,
         app_flash,
@@ -213,7 +213,7 @@ where
         fault_policy,
     )?;
     let _res = check_processes(kernel_resources, kernel.get_checker());
-    Ok(())
+    Ok(remaining_memory)
 }
 
 /// Load processes (stored as TBF objects in flash) into runnable
@@ -242,8 +242,8 @@ pub fn load_processes<C: Chip>(
     mut procs: &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
     _capability_management: &dyn ProcessManagementCapability,
-) -> Result<(), ProcessLoadError> {
-    load_processes_from_flash(
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])> {
+    let remaining_memory = load_processes_from_flash(
         kernel,
         chip,
         app_flash,
@@ -266,10 +266,10 @@ pub fn load_processes<C: Chip>(
             Ok(())
         });
         if let Some(Err(e)) = res {
-            return Err(e);
+            return Err((e, remaining_memory));
         }
     }
-    Ok(())
+    Ok(remaining_memory)
 }
 
 /// Helper function to load processes from flash into an array of active
@@ -298,7 +298,7 @@ fn load_processes_from_flash<C: Chip>(
     app_memory: &'static mut [u8],
     procs: &mut &'static mut [Option<&'static dyn Process>],
     fault_policy: &'static dyn ProcessFaultPolicy,
-) -> Result<(), ProcessLoadError> {
+) -> Result<&'static mut [u8], (ProcessLoadError, &'static mut [u8])> {
     if config::CONFIG.debug_load_processes {
         debug!(
             "Loading processes from flash={:#010X}-{:#010X} into sram={:#010X}-{:#010X}",
@@ -339,16 +339,17 @@ fn load_processes_from_flash<C: Chip>(
                     }
                 }
             }
-            Err((_new_flash, _new_mem, err)) => {
+            Err((_new_flash, new_mem, err)) => {
                 if config::CONFIG.debug_load_processes {
                     debug!("No more processes to load: {:?}.", err);
                 }
+                remaining_memory = new_mem;
                 // No more processes to load.
                 break;
             }
         }
     }
-    Ok(())
+    Ok(remaining_memory)
 }
 
 /// Use `checker` to transition `procs` from the
