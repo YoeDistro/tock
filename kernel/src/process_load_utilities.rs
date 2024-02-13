@@ -619,12 +619,12 @@ impl<C: 'static + Chip> ProcessLoader<C> {
         let data =
             unsafe { core::slice::from_raw_parts(appstart, entry_length.try_into().unwrap()) };
 
-        let mut crc32_instance = tickv::crc32::Crc32::new();
-        crc32_instance.update(data);
+        // let mut crc32_instance = tickv::crc32::Crc32::new();
+        // crc32_instance.update(data);
 
-        let crc32_rst = crc32_instance.finalise();
+        // let crc32_rst = crc32_instance.finalise();
 
-        return crc32_rst;
+        return crate::utilities::helpers::crc32_posix(data);
     }
 
     fn kernel_version(&self) -> Result<u32, ErrorCode> {
