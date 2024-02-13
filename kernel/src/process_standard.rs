@@ -10,6 +10,7 @@
 use core::cell::Cell;
 use core::cmp;
 use core::fmt::Write;
+use core::num::NonZeroU32;
 use core::ptr::NonNull;
 use core::{mem, ptr, slice, str};
 
@@ -22,6 +23,7 @@ use crate::errorcode::ErrorCode;
 use crate::kernel::Kernel;
 use crate::platform::chip::Chip;
 use crate::platform::mpu::{self, MPU};
+use crate::process::BinaryVersion;
 use crate::process::{Error, FunctionCall, FunctionCallSource, Process, State, Task};
 use crate::process::{FaultAction, ProcessCustomGrantIdentifier, ProcessId};
 use crate::process::{ProcessAddresses, ProcessSizes, ShortID};
@@ -246,8 +248,15 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         self.app_id.get()
     }
 
-    fn binary_version(&self) -> u32 {
-        self.header.get_binary_version()
+    fn binary_version(&self) -> Option<BinaryVersion> {
+        match self.header.get_binary_version() {
+            0 => None,
+            // Safety: because of the previous arm, version != 0, so the call to
+            // NonZeroU32::new_unchecked() is safe
+            version => Some(BinaryVersion::new(unsafe {
+                NonZeroU32::new_unchecked(version)
+            })),
+        }
     }
 
     fn enqueue_task(&self, task: Task) -> Result<(), ErrorCode> {
@@ -470,7 +479,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         // because this state means the process is ready to run and
         // will be started in a future core scheduler loop; terminate
         // allows the kernel to prevent this before it starts running.
-        if self.is_running() == false
+        if !self.is_running()
             && self.get_state() != State::Faulted
             && self.get_state() != State::CredentialsApproved
         {
@@ -635,7 +644,7 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
                 Err(Error::AddressOutOfBounds)
             } else if new_break > self.kernel_memory_break.get() {
                 Err(Error::OutOfMemory)
-            } else if let Err(_) = self.chip.mpu().update_app_memory_region(
+            } else if let Err(()) = self.chip.mpu().update_app_memory_region(
                 new_break,
                 self.kernel_memory_break.get(),
                 mpu::Permissions::ReadWriteOnly,
@@ -822,22 +831,22 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         driver_num: usize,
         size: usize,
         align: usize,
-    ) -> bool {
+    ) -> Result<(), ()> {
         // Do not modify an inactive process.
         if !self.is_running() {
-            return false;
+            return Err(());
         }
 
         // Verify the grant_num is valid.
         if grant_num >= self.kernel.get_grant_count_and_finalize() {
-            return false;
+            return Err(());
         }
 
         // Verify that the grant is not already allocated. If the pointer is not
         // null then the grant is already allocated.
         if let Some(is_allocated) = self.grant_is_allocated(grant_num) {
             if is_allocated {
-                return false;
+                return Err(());
             }
         }
 
@@ -854,30 +863,30 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         // If we find a match, then the `driver_num` must already be used and
         // the grant allocation fails.
         if exists {
-            return false;
+            return Err(());
         }
 
         // Use the shared grant allocator function to actually allocate memory.
         // Returns `None` if the allocation cannot be created.
         if let Some(grant_ptr) = self.allocate_in_grant_region_internal(size, align) {
             // Update the grant pointer to the address of the new allocation.
-            self.grant_pointers.map_or(false, |grant_pointers| {
+            self.grant_pointers.map_or(Err(()), |grant_pointers| {
                 // Implement `grant_pointers[grant_num] = grant_ptr` without a
                 // chance of a panic.
                 grant_pointers
                     .get_mut(grant_num)
-                    .map_or(false, |grant_entry| {
+                    .map_or(Err(()), |grant_entry| {
                         // Actually set the driver num and grant pointer.
                         grant_entry.driver_num = driver_num;
                         grant_entry.grant_ptr = grant_ptr.as_ptr();
 
                         // If all of this worked, return true.
-                        true
+                        Ok(())
                     })
             })
         } else {
             // Could not allocate the memory for the grant region.
-            false
+            Err(())
         }
     }
 
@@ -885,10 +894,10 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
         &self,
         size: usize,
         align: usize,
-    ) -> Option<(ProcessCustomGrantIdentifier, NonNull<u8>)> {
+    ) -> Result<(ProcessCustomGrantIdentifier, NonNull<u8>), ()> {
         // Do not modify an inactive process.
         if !self.is_running() {
-            return None;
+            return Err(());
         }
 
         // Use the shared grant allocator function to actually allocate memory.
@@ -898,10 +907,10 @@ impl<C: Chip> Process for ProcessStandard<'_, C> {
             // this custom grant in the future.
             let identifier = self.create_custom_grant_identifier(ptr);
 
-            Some((identifier, ptr))
+            Ok((identifier, ptr))
         } else {
             // Could not allocate memory for the custom grant.
-            None
+            Err(())
         }
     }
 
@@ -2009,7 +2018,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
         });
         match ukb_init_process {
             Ok(()) => {}
-            Err(_) => {
+            Err(()) => {
                 // We couldn't initialize the architecture-specific state for
                 // this process. This shouldn't happen since the app was able to
                 // be started before, but at this point the app is no longer
@@ -2101,7 +2110,7 @@ impl<C: 'static + Chip> ProcessStandard<'_, C> {
             } else if new_break > self.kernel_memory_break.get() {
                 None
                 // Verify this is compatible with the MPU.
-            } else if let Err(_) = self.chip.mpu().update_app_memory_region(
+            } else if let Err(()) = self.chip.mpu().update_app_memory_region(
                 self.app_break.get(),
                 new_break,
                 mpu::Permissions::ReadWriteOnly,
