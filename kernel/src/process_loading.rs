@@ -150,16 +150,11 @@ pub fn load_processes<C: Chip>(
         debug!("Checking: no checking, load and run all processes");
     }
     for proc in procs.iter() {
-        let res = proc.map(|p| {
-            p.set_short_app_id(ShortID::LocallyUnique);
+        proc.map(|p| {
             if config::CONFIG.debug_process_credentials {
                 debug!("Running {}", p.get_process_name());
             }
-            Ok(())
         });
-        if let Some(Err(e)) = res {
-            return Err(e);
-        }
     }
     Ok(())
 }
@@ -218,6 +213,7 @@ fn load_processes_from_flash<C: Chip>(
                     chip,
                     process_binary,
                     remaining_memory,
+                    ShortID::LocallyUnique,
                     index,
                     fault_policy,
                 );
@@ -343,6 +339,7 @@ fn load_process<C: Chip>(
     chip: &'static C,
     process_binary: ProcessBinary,
     app_memory: &'static mut [u8],
+    app_id: ShortID,
     index: usize,
     fault_policy: &'static dyn ProcessFaultPolicy,
 ) -> Result<(&'static mut [u8], Option<&'static dyn Process>), (&'static mut [u8], ProcessLoadError)>
@@ -374,6 +371,7 @@ fn load_process<C: Chip>(
             process_binary,
             app_memory,
             fault_policy,
+            app_id,
             index,
         )
         .map_err(|(e, memory)| (memory, e))?
@@ -708,6 +706,7 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
                                 self.chip,
                                 process_binary,
                                 self.app_memory.take(),
+                                short_app_id,
                                 index,
                                 self.fault_policy,
                             );
@@ -723,11 +722,6 @@ impl<C: Chip> SequentialProcessLoaderMachine<C> {
                                                 )
                                             });
                                         }
-
-                                        // Set the ShortID to the new process.
-                                        proc.map(|p| {
-                                            p.set_short_app_id(short_app_id);
-                                        });
 
                                         // Store the `ProcessStandard` object in the `PROCESSES`
                                         // array.
