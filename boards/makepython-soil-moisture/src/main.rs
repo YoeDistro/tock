@@ -31,7 +31,7 @@ use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 // https://github.com/Makerfabs/NRF52840/issues/1
 const LED_PIN: Pin = Pin::P1_11;
 
-const BUTTON_RST_PIN: Pin = Pin::P0_18;
+const BUTTON_RST_PIN: Pin = Pin::P1_10;
 const BUTTON_PIN: Pin = Pin::P1_15;
 
 const GPIO_SOIL_SENSOR_POWER: Pin = Pin::P0_23;
@@ -412,7 +412,7 @@ pub unsafe fn start() -> (
         static_init!(
             [nrf52840::adc::AdcChannelSetup; 1],
             [nrf52840::adc::AdcChannelSetup::new(
-                nrf52840::adc::AdcChannel::AnalogInput2,
+                nrf52840::adc::AdcChannel::AnalogInput1,
             )]
         ),
         board_kernel,
@@ -442,30 +442,25 @@ pub unsafe fn start() -> (
         .finalize(components::ssd1306_component_static!(nrf52840::i2c::TWI));
 
     let apps_regions = static_init!(
-        [capsules_extra::screen_shared::AppScreenRegion; 3],
+        [capsules_extra::screen_shared::AppScreenRegion; 2],
         [
             capsules_extra::screen_shared::AppScreenRegion::new(
-                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(crc("circle")).unwrap()),
-                0,     // x
-                0,     // y
-                8 * 8, // width
-                8 * 8  // height
-            ),
-            capsules_extra::screen_shared::AppScreenRegion::new(
-                kernel::process::ShortID::Fixed(core::num::NonZeroU32::new(crc("count")).unwrap()),
-                8 * 8, // x
-                0,     // y
-                8 * 8, // width
-                4 * 8  // height
+                kernel::process::ShortID::Fixed(
+                    core::num::NonZeroU32::new(crc("soil_moisture_instructions")).unwrap()
+                ),
+                0,      // x
+                0,      // y
+                16 * 8, // width
+                6 * 8   // height
             ),
             capsules_extra::screen_shared::AppScreenRegion::new(
                 kernel::process::ShortID::Fixed(
-                    core::num::NonZeroU32::new(crc("tock-scroll")).unwrap()
+                    core::num::NonZeroU32::new(crc("soil_moisture_data")).unwrap()
                 ),
-                8 * 8, // x
-                4 * 8, // y
-                8 * 8, // width
-                4 * 8  // height
+                0,      // x
+                6 * 8,  // y
+                16 * 8, // width
+                2 * 8   // height
             )
         ]
     );
