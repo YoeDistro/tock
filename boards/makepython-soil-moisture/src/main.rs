@@ -24,6 +24,8 @@ use kernel::{create_capability, debug, debug_gpio, debug_verbose, static_init};
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 
+mod policy;
+
 // The datasheet and website and everything say this is connected to P1.10, but
 // actually looking at the hardware files (and what actually works) is that the
 // LED is connected to P1.11 (as of a board I received in September 2023).
@@ -137,6 +139,7 @@ pub struct Platform {
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     scheduler: &'static RoundRobinSched<'static>,
     checker: &'static Checker,
+    syscall_filter: &'static policy::SoilMoistureSyscallFilter,
     systick: cortexm4::systick::SysTick,
 }
 
@@ -167,7 +170,7 @@ impl KernelResources<nrf52::chip::NRF52<'static, Nrf52840DefaultPeripherals<'sta
     for Platform
 {
     type SyscallDriverLookup = Self;
-    type SyscallFilter = ();
+    type SyscallFilter = policy::SoilMoistureSyscallFilter;
     type ProcessFault = ();
     type CredentialsCheckingPolicy = Checker;
     type Scheduler = RoundRobinSched<'static>;
@@ -179,7 +182,7 @@ impl KernelResources<nrf52::chip::NRF52<'static, Nrf52840DefaultPeripherals<'sta
         self
     }
     fn syscall_filter(&self) -> &Self::SyscallFilter {
-        &()
+        self.syscall_filter
     }
     fn process_fault(&self) -> &Self::ProcessFault {
         &()
@@ -561,6 +564,11 @@ pub unsafe fn start() -> (
     );
     kernel::deferred_call::DeferredCallClient::register(checker);
 
+    let syscall_filter = static_init!(
+        policy::SoilMoistureSyscallFilter,
+        policy::SoilMoistureSyscallFilter {}
+    );
+
     //--------------------------------------------------------------------------
     // FINAL SETUP AND BOARD BOOT
     //--------------------------------------------------------------------------
@@ -591,6 +599,7 @@ pub unsafe fn start() -> (
         ),
         scheduler,
         checker,
+        syscall_filter,
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };
 
