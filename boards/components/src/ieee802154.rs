@@ -163,13 +163,10 @@ pub type Ieee802154ComponentType<R, A> = capsules_extra::ieee802154::RadioDriver
     >,
 >;
 
-pub type Ieee802154ComponentMuxMacType<R, A> = capsules_extra::ieee802154::virtual_mac::MuxMac<
+pub type Ieee802154ComponentMacDeviceType<R, A> = capsules_extra::ieee802154::framer::Framer<
     'static,
-    capsules_extra::ieee802154::framer::Framer<
-        'static,
-        capsules_extra::ieee802154::mac::AwakeMac<'static, R>,
-        capsules_core::virtualizers::virtual_aes_ccm::VirtualAES128CCM<'static, A>,
-    >,
+    capsules_extra::ieee802154::mac::AwakeMac<'static, R>,
+    capsules_core::virtualizers::virtual_aes_ccm::VirtualAES128CCM<'static, A>,
 >;
 
 pub struct Ieee802154Component<
