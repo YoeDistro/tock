@@ -119,6 +119,7 @@ type HTS221Sensor = components::hts221::Hts221ComponentType<
 >;
 type TemperatureDriver = components::temperature::TemperatureComponentType<HTS221Sensor>;
 type HumidityDriver = components::humidity::HumidityComponentType<HTS221Sensor>;
+type RngDriver = components::rng::RngComponentType<nrf52840::trng::Trng<'static>>;
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -151,7 +152,7 @@ pub struct Platform {
         3,
     >,
     adc: &'static capsules_core::adc::AdcVirtualized<'static>,
-    rng: &'static capsules_core::rng::RngDriver<'static>,
+    rng: &'static RngDriver,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     alarm: &'static capsules_core::alarm::AlarmDriver<
         'static,
@@ -407,7 +408,7 @@ pub unsafe fn start() -> (
         capsules_core::rng::DRIVER_NUM,
         &base_peripherals.trng,
     )
-    .finalize(components::rng_component_static!());
+    .finalize(components::rng_component_static!(nrf52840::trng::Trng));
 
     //--------------------------------------------------------------------------
     // ADC

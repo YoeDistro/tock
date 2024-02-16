@@ -114,6 +114,7 @@ type SI7021Sensor = components::si7021::SI7021ComponentType<
 >;
 type TemperatureDriver = components::temperature::TemperatureComponentType<SI7021Sensor>;
 type HumidityDriver = components::humidity::HumidityComponentType<SI7021Sensor>;
+type RngDriver = components::rng::RngComponentType<sam4l::trng::Trng<'static>>;
 
 struct Imix {
     pconsole: &'static capsules_core::process_console::ProcessConsole<
@@ -141,7 +142,7 @@ struct Imix {
         1,
     >,
     button: &'static capsules_core::button::Button<'static, sam4l::gpio::GPIOPin<'static>>,
-    rng: &'static capsules_core::rng::RngDriver<'static>,
+    rng: &'static RngDriver,
     analog_comparator: &'static capsules_extra::analog_comparator::AnalogComparator<
         'static,
         sam4l::acifc::Acifc<'static>,
@@ -614,7 +615,7 @@ pub unsafe fn main() {
         capsules_core::rng::DRIVER_NUM,
         &peripherals.trng,
     )
-    .finalize(components::rng_component_static!());
+    .finalize(components::rng_component_static!(sam4l::trng::Trng));
 
     // For now, assign the 802.15.4 MAC address on the device as
     // simply a 16-bit short address which represents the last 16 bits

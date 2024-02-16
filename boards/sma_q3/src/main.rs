@@ -78,6 +78,7 @@ type Bmp280Sensor = components::bmp280::Bmp280ComponentType<
     capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, nrf52840::i2c::TWI<'static>>,
 >;
 type TemperatureDriver = components::temperature::TemperatureComponentType<Bmp280Sensor>;
+type RngDriver = components::rng::RngComponentType<nrf52840::trng::Trng<'static>>;
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -102,7 +103,7 @@ pub struct Platform {
         LedHigh<'static, nrf52840::gpio::GPIOPin<'static>>,
         2,
     >,
-    rng: &'static capsules_core::rng::RngDriver<'static>,
+    rng: &'static RngDriver,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     analog_comparator: &'static capsules_extra::analog_comparator::AnalogComparator<
         'static,
@@ -404,7 +405,7 @@ pub unsafe fn main() {
         capsules_core::rng::DRIVER_NUM,
         &base_peripherals.trng,
     )
-    .finalize(components::rng_component_static!());
+    .finalize(components::rng_component_static!(nrf52840::trng::Trng));
 
     // Initialize AC using AIN5 (P0.29) as VIN+ and VIN- as AIN0 (P0.02)
     // These are hardcoded pin assignments specified in the driver
