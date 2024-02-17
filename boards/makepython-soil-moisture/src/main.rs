@@ -36,7 +36,7 @@ const LED_PIN: Pin = Pin::P1_11;
 const BUTTON_RST_PIN: Pin = Pin::P0_18;
 const BUTTON_PIN: Pin = Pin::P1_15;
 
-const GPIO_SOIL_SENSOR_POWER: Pin = Pin::P0_23;
+const GPIO_SOIL_SENSOR_POWER: Pin = Pin::P1_10;
 
 const _UART_TX_PIN: Pin = Pin::P0_06;
 const _UART_RX_PIN: Pin = Pin::P0_08;
