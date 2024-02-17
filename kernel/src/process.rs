@@ -258,7 +258,21 @@ impl PartialEq for ShortID {
         }
     }
 }
+
 impl Eq for ShortID {}
+
+impl core::fmt::Debug for ShortID {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ShortID::LocallyUnique => {
+                write!(formatter, "Unique")
+            }
+            ShortID::Fixed(id) => {
+                write!(formatter, "0x{:<8x}", id)
+            }
+        }
+    }
+}
 
 /// Enum used to inform scheduler why a process stopped executing (aka why
 /// `do_process()` returned).
