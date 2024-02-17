@@ -33,7 +33,7 @@ mod policy;
 // https://github.com/Makerfabs/NRF52840/issues/1
 const LED_PIN: Pin = Pin::P1_11;
 
-const BUTTON_RST_PIN: Pin = Pin::P1_10;
+const BUTTON_RST_PIN: Pin = Pin::P0_18;
 const BUTTON_PIN: Pin = Pin::P1_15;
 
 const GPIO_SOIL_SENSOR_POWER: Pin = Pin::P0_23;
@@ -458,7 +458,7 @@ pub unsafe fn start() -> (
         [
             capsules_extra::screen_shared::AppScreenRegion::new(
                 kernel::process::ShortID::Fixed(
-                    core::num::NonZeroU32::new(crc("soil_moisture_instructions")).unwrap()
+                    core::num::NonZeroU32::new(crc("soil_moisture_instr")).unwrap()
                 ),
                 0,      // x
                 0,      // y
