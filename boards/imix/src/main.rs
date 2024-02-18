@@ -721,6 +721,47 @@ pub unsafe fn main() {
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
+    let checker = static_init!(
+        kernel::process::ProcessCheckerMachine,
+        kernel::process::ProcessCheckerMachine::new(&())
+    );
+
+    checker.set_client(loader);
+
+    // These symbols are defined in the linker script.
+    extern "C" {
+        /// Beginning of the ROM region containing app images.
+        static _sapps: u8;
+        /// End of the ROM region containing app images.
+        static _eapps: u8;
+        /// Beginning of the RAM region for app memory.
+        static mut _sappmem: u8;
+        /// End of the RAM region for app memory.
+        static _eappmem: u8;
+    }
+
+    let loader = static_init!(
+        kernel::process::SequentialProcessLoaderMachine<
+            sam4l::chip::Sam4l<Sam4lDefaultPeripherals>,
+        >,
+        kernel::process::SequentialProcessLoaderMachine::new(
+            checker,
+            &mut PROCESSES,
+            board_kernel,
+            chip,
+            core::slice::from_raw_parts(
+                &_sapps as *const u8,
+                &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            ),
+            core::slice::from_raw_parts_mut(
+                &mut _sappmem as *mut u8,
+                &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            ),
+            &FAULT_RESPONSE,
+            &process_mgmt_cap
+        )
+    );
+
     let imix = Imix {
         pconsole,
         console,
@@ -809,38 +850,30 @@ pub unsafe fn main() {
 
     debug!("Initialization complete. Entering main loop");
 
-    // These symbols are defined in the linker script.
-    extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
-        /// Beginning of the RAM region for app memory.
-        static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
-        static _eappmem: u8;
-    }
+    loader.register();
+    loader.start();
 
-    kernel::process::load_and_check_processes(
-        board_kernel,
-        &imix,
-        chip,
-        core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
-        ),
-        core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
-        ),
-        &mut PROCESSES,
-        &FAULT_RESPONSE,
-        &process_mgmt_cap,
-    )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
+    // kernel::process::load_and_check_processes(
+    //     board_kernel,
+    //     &imix,
+    //     chip,
+    //     core::slice::from_raw_parts(
+    //         &_sapps as *const u8,
+    //         &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+    //     ),
+    //     core::slice::from_raw_parts_mut(
+    //         &mut _sappmem as *mut u8,
+    //         &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+    //     ),
+    //     &mut PROCESSES,
+    //     &mut PROCESS_BINARIES,
+    //     &FAULT_RESPONSE,
+    //     &process_mgmt_cap,
+    // )
+    // .unwrap_or_else(|err| {
+    //     debug!("Error loading processes!");
+    //     debug!("{:?}", err);
+    // });
 
     board_kernel.kernel_loop(&imix, chip, Some(&imix.ipc), &main_cap);
 }
