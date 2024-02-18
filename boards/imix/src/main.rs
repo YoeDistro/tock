@@ -163,8 +163,6 @@ struct Imix {
         &'static capsules_extra::nonvolatile_storage_driver::NonvolatileStorage<'static>,
     scheduler: &'static RoundRobinSched<'static>,
     systick: cortexm4::systick::SysTick,
-    credentials_checking_policy: &'static (),
-    //credentials_checking_policy: &'static AppCheckerSha256,
 }
 
 // The RF233 radio stack requires our buffers for its SPI operations:
@@ -217,8 +215,6 @@ impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix {
     type SyscallDriverLookup = Self;
     type SyscallFilter = ();
     type ProcessFault = ();
-    type CredentialsCheckingPolicy = ();
-    //type CredentialsCheckingPolicy = AppCheckerSha256;
     type Scheduler = RoundRobinSched<'static>;
     type SchedulerTimer = cortexm4::systick::SysTick;
     type WatchDog = ();
@@ -232,9 +228,6 @@ impl KernelResources<sam4l::chip::Sam4l<Sam4lDefaultPeripherals>> for Imix {
     }
     fn process_fault(&self) -> &Self::ProcessFault {
         &()
-    }
-    fn credentials_checking_policy(&self) -> &'static Self::CredentialsCheckingPolicy {
-        self.credentials_checking_policy
     }
     fn scheduler(&self) -> &Self::Scheduler {
         self.scheduler
@@ -721,12 +714,21 @@ pub unsafe fn main() {
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
-    let checker = static_init!(
-        kernel::process::ProcessCheckerMachine,
-        kernel::process::ProcessCheckerMachine::new(&())
-    );
+    // Create the software-based SHA engine.
+    let sha = components::sha::ShaSoftware256Component::new()
+        .finalize(components::sha_software_256_component_static!());
 
-    checker.set_client(loader);
+    // Create the credential checker.
+    let checking_policy = components::appid::checker_sha::AppCheckerSha256Component::new(sha)
+        .finalize(components::app_checker_sha256_component_static!());
+
+    // Create the AppID assigner.
+    let assigner = components::appid::assigner_name::AppIdAssignerNamesComponent::new()
+        .finalize(components::appid_assigner_names_component_static!());
+
+    // Create the process checking machine.
+    let checker = components::appid::checker::ProcessCheckerMachineComponent::new(checking_policy)
+        .finalize(components::process_checker_machine_component_static!());
 
     // These symbols are defined in the linker script.
     extern "C" {
@@ -740,6 +742,11 @@ pub unsafe fn main() {
         static _eappmem: u8;
     }
 
+    let process_binary_array = static_init!(
+        [Option<kernel::process::ProcessBinary>; NUM_PROCS],
+        [None, None, None, None]
+    );
+
     let loader = static_init!(
         kernel::process::SequentialProcessLoaderMachine<
             sam4l::chip::Sam4l<Sam4lDefaultPeripherals>,
@@ -747,6 +754,7 @@ pub unsafe fn main() {
         kernel::process::SequentialProcessLoaderMachine::new(
             checker,
             &mut PROCESSES,
+            process_binary_array,
             board_kernel,
             chip,
             core::slice::from_raw_parts(
@@ -758,9 +766,12 @@ pub unsafe fn main() {
                 &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
             ),
             &FAULT_RESPONSE,
+            assigner,
             &process_mgmt_cap
         )
     );
+
+    checker.set_client(loader);
 
     let imix = Imix {
         pconsole,
@@ -785,8 +796,6 @@ pub unsafe fn main() {
         nonvolatile_storage,
         scheduler,
         systick: cortexm4::systick::SysTick::new(),
-        //credentials_checking_policy: checker,
-        credentials_checking_policy: &(),
     };
 
     // Need to initialize the UART for the nRF51 serialization.
