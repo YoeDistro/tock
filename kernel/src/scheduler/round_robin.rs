@@ -113,9 +113,10 @@ impl<'a, C: Chip> Scheduler<C> for RoundRobinSched<'a> {
         };
         assert!(timeslice != 0);
 
-        // next will not be None, because if we make a full iteration and nothing
-        // is ready we return early
-        SchedulingDecision::RunProcess((next.unwrap(), Some(timeslice)))
+        match next {
+            Some(p) => SchedulingDecision::RunProcess((p, Some(timeslice))),
+            None => SchedulingDecision::TrySleep,
+        }
     }
 
     fn result(&self, result: StoppedExecutingReason, execution_time_us: Option<u32>) {
