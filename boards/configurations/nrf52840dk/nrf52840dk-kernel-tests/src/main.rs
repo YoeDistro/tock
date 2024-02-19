@@ -10,11 +10,15 @@
 #![cfg_attr(not(doc), no_main)]
 #![deny(missing_docs)]
 
+use capsules_core::test::capsule_test::CapsuleTestClient;
+use core::cell::Cell;
 use kernel::component::Component;
 use kernel::hil::time::Counter;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::scheduler::round_robin::RoundRobinSched;
+use kernel::utilities::cells::NumericCellExt;
 use kernel::{capabilities, create_capability, static_init};
+use nrf52840::chip::Nrf52DefaultPeripherals;
 use nrf52840::gpio::Pin;
 use nrf52840::interrupt_service::Nrf52840DefaultPeripherals;
 use nrf52_components::{self, UartChannel, UartPins};
@@ -61,6 +65,41 @@ impl SyscallDriverLookup for Platform {
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
     {
         f(None)
+    }
+}
+
+//------------------------------------------------------------------------------
+// TEST LAUNCHER FOR RUNNING TESTS
+//------------------------------------------------------------------------------
+
+struct TestLauncher {
+    test_index: Cell<usize>,
+    peripherals: &'static Nrf52DefaultPeripherals<'static>,
+}
+impl TestLauncher {
+    fn new(peripherals: &'static Nrf52DefaultPeripherals<'static>) -> Self {
+        Self {
+            test_index: Cell::new(0),
+            peripherals,
+        }
+    }
+
+    fn next(&'static self) {
+        let index = self.test_index.get();
+        self.test_index.increment();
+        match index {
+            0 => unsafe { test::hmac_sha256_test::run_hmacsha256(self) },
+            1 => unsafe { test::siphash24_test::run_siphash24(self) },
+            2 => unsafe { test::aes_test::run_aes128_ctr(&self.peripherals.ecb, self) },
+            3 => unsafe { test::aes_test::run_aes128_cbc(&self.peripherals.ecb, self) },
+            4 => unsafe { test::aes_test::run_aes128_ecb(&self.peripherals.ecb, self) },
+            _ => kernel::debug!("All tests finished."),
+        }
+    }
+}
+impl CapsuleTestClient for TestLauncher {
+    fn done(&'static self, _result: Result<(), ()>) {
+        self.next();
     }
 }
 
@@ -215,17 +254,13 @@ pub unsafe fn main() {
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };
 
+    let test_launcher = static_init!(TestLauncher, TestLauncher::new(&base_peripherals));
+
     //--------------------------------------------------------------------------
     // TESTS
     //--------------------------------------------------------------------------
 
-    test::aes_test::run_aes128_ctr(&base_peripherals.ecb);
-    test::aes_test::run_aes128_cbc(&base_peripherals.ecb);
-    test::aes_test::run_aes128_ecb(&base_peripherals.ecb);
-
-    test::hmac_sha256_test::run_hmacsha256();
-
-    test::siphash24_test::run_siphash24();
+    test_launcher.next();
 
     //--------------------------------------------------------------------------
     // KERNEL LOOP
