@@ -204,7 +204,7 @@ pub unsafe fn main() {
     nrf52_components::NrfClockComponent::new(&base_peripherals.clock).finalize(());
 
     //--------------------------------------------------------------------------
-    // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
+    // PLATFORM AND SCHEDULER
     //--------------------------------------------------------------------------
 
     let scheduler = components::sched::round_robin::RoundRobinComponent::new(&PROCESSES)
@@ -215,11 +215,21 @@ pub unsafe fn main() {
         systick: cortexm4::systick::SysTick::new_with_calibration(64000000),
     };
 
-    // test::aes_test::run_aes128_ctr(&base_peripherals.ecb);
-    // test::aes_test::run_aes128_cbc(&base_peripherals.ecb);
-    // test::aes_test::run_aes128_ecb(&base_peripherals.ecb);
+    //--------------------------------------------------------------------------
+    // TESTS
+    //--------------------------------------------------------------------------
+
+    test::aes_test::run_aes128_ctr(&base_peripherals.ecb);
+    test::aes_test::run_aes128_cbc(&base_peripherals.ecb);
+    test::aes_test::run_aes128_ecb(&base_peripherals.ecb);
 
     test::hmac_sha256_test::run_hmacsha256();
+
+    test::siphash24_test::run_siphash24();
+
+    //--------------------------------------------------------------------------
+    // KERNEL LOOP
+    //--------------------------------------------------------------------------
 
     board_kernel.kernel_loop(
         &platform,
