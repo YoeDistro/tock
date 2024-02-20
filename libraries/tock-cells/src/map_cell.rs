@@ -136,6 +136,21 @@ impl<T> MapCell<T> {
         }
     }
 
+    /// Creates a new `MapCell` containing `value.unwrap()` if `value` is
+    /// `Some`, or an empty `MapCell` if value is `None`.
+    pub fn maybe(value: Option<T>) -> MapCell<T> {
+        match value {
+            Some(v) => MapCell {
+                val: UnsafeCell::new(MaybeUninit::new(v)),
+                occupied: Cell::new(MapCellState::Init),
+            },
+            None => MapCell {
+                val: UnsafeCell::new(MaybeUninit::uninit()),
+                occupied: Cell::new(MapCellState::Uninit),
+            },
+        }
+    }
+
     /// Returns `true` if the `MapCell` contains no value.
     ///
     /// # Examples
