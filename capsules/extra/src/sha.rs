@@ -52,6 +52,7 @@ use core::cell::Cell;
 
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use kernel::hil::digest;
+use kernel::hil::digest::{DigestAlgorithm, Sha256, Sha384, Sha512};
 use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
 use kernel::utilities::cells::{MapCell, OptionalCell, TakeCell};
@@ -59,8 +60,21 @@ use kernel::utilities::leasable_buffer::SubSlice;
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::{ErrorCode, ProcessId};
 
-pub struct ShaDriver<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm + 'static> {
-    sha: &'a H,
+enum ShaOperation {
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+pub struct ShaDriver<
+    'a,
+    S256: digest::Digest<'a, Sha256>,
+    S384: digest::Digest<'a, Sha384>,
+    S512: digest::Digest<'a, Sha512>,
+> {
+    sha256: Option<&'a S256>,
+    sha384: Option<&'a S384>,
+    sha512: Option<&'a S512>,
 
     active: Cell<bool>,
 
@@ -74,30 +88,58 @@ pub struct ShaDriver<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm + 
 
     data_buffer: TakeCell<'static, [u8]>,
     data_copied: Cell<usize>,
-    dest_buffer: MapCell<&'static mut D::Digest>,
+    sha256_buffer: MapCell<&'static mut <Sha256 as DigestAlgorithm>::Digest>,
+    sha384_buffer: MapCell<&'static mut <Sha384 as DigestAlgorithm>::Digest>,
+    sha512_buffer: MapCell<&'static mut <Sha512 as DigestAlgorithm>::Digest>,
 }
 
-impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> ShaDriver<'a, H, D> {
+impl<
+        'a,
+        S256: digest::Digest<'a, Sha256>,
+        S384: digest::Digest<'a, Sha384>,
+        S512: digest::Digest<'a, Sha512>,
+    > ShaDriver<'a, S256, S384, S512>
+{
     pub fn new(
-        sha: &'a H,
+        sha256: Option<&'a S256>,
+        sha384: Option<&'a S384>,
+        sha512: Option<&'a S512>,
         data_buffer: &'static mut [u8],
-        dest_buffer: &'static mut D::Digest,
+        sha256_buffer: Option<&'static mut <Sha256 as DigestAlgorithm>::Digest>,
+        sha384_buffer: Option<&'static mut <Sha384 as DigestAlgorithm>::Digest>,
+        sha512_buffer: Option<&'static mut <Sha512 as DigestAlgorithm>::Digest>,
         grant: Grant<
             App,
             UpcallCount<1>,
             AllowRoCount<{ ro_allow::COUNT }>,
             AllowRwCount<{ rw_allow::COUNT }>,
         >,
-    ) -> ShaDriver<'a, H, D> {
-        ShaDriver {
-            sha: sha,
+    ) -> Self {
+        let sha_driver = ShaDriver {
+            sha256,
+            sha384,
+            sha512,
             active: Cell::new(false),
             apps: grant,
             processid: OptionalCell::empty(),
             data_buffer: TakeCell::new(data_buffer),
             data_copied: Cell::new(0),
-            dest_buffer: MapCell::new(dest_buffer),
-        }
+            sha256_buffer: MapCell::empty(),
+            sha384_buffer: MapCell::empty(),
+            sha512_buffer: MapCell::empty(),
+        };
+
+        sha256_buffer.map(|b| {
+            sha_driver.sha256_buffer.put(b);
+        });
+        sha384_buffer.map(|b| {
+            sha_driver.sha384_buffer.put(b);
+        });
+        sha512_buffer.map(|b| {
+            sha_driver.sha512_buffer.put(b);
+        });
+
+        sha_driver
     }
 
     fn run(&self) -> Result<(), ErrorCode> {
@@ -201,8 +243,12 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> ShaDriver<'a, H, 
     }
 }
 
-impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientData<D>
-    for ShaDriver<'a, H, D>
+impl<
+        'a,
+        S256: digest::Digest<'a, Sha256>,
+        S384: digest::Digest<'a, Sha384>,
+        S512: digest::Digest<'a, Sha512>,
+    > digest::ClientData<Sha256> for ShaDriver<'a, S256, S384, S512>
 {
     // Because data needs to be copied from a userspace buffer into a kernel (RAM) one,
     // we always pass mut data; this callback should never be invoked.
@@ -336,10 +382,18 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientDat
     }
 }
 
-impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientHash<D>
-    for ShaDriver<'a, H, D>
+impl<
+        'a,
+        S256: digest::Digest<'a, Sha256>,
+        S384: digest::Digest<'a, Sha384>,
+        S512: digest::Digest<'a, Sha512>,
+    > digest::ClientHash<Sha256> for ShaDriver<'a, S256, S384, S512>
 {
-    fn hash_done(&self, result: Result<(), ErrorCode>, digest: &'static mut D::Digest) {
+    fn hash_done(
+        &self,
+        result: Result<(), ErrorCode>,
+        digest: &'static mut <Sha256 as DigestAlgorithm>::Digest,
+    ) {
         self.processid.map(|id| {
             self.apps
                 .enter(id, |_, kernel_data| {
@@ -353,10 +407,10 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientHas
                             dest.mut_enter(|dest| {
                                 let len = dest.len();
 
-                                if len < core::mem::size_of::<D>() {
+                                if len < core::mem::size_of::<Sha256>() {
                                     dest.copy_from_slice(&digest.as_ref()[0..len]);
                                 } else {
-                                    dest[0..core::mem::size_of::<D>()]
+                                    dest[0..core::mem::size_of::<Sha256>()]
                                         .copy_from_slice(digest.as_ref());
                                 }
                             })
@@ -388,10 +442,18 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientHas
     }
 }
 
-impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientVerify<D>
-    for ShaDriver<'a, H, D>
+impl<
+        'a,
+        S256: digest::Digest<'a, Sha256>,
+        S384: digest::Digest<'a, Sha384>,
+        S512: digest::Digest<'a, Sha512>,
+    > digest::ClientVerify<Sha256> for ShaDriver<'a, S256, S384, S512>
 {
-    fn verification_done(&self, result: Result<bool, ErrorCode>, compare: &'static mut D::Digest) {
+    fn verification_done(
+        &self,
+        result: Result<bool, ErrorCode>,
+        compare: &'static mut <Sha256 as DigestAlgorithm>::Digest,
+    ) {
         self.processid.map(|id| {
             self.apps
                 .enter(id, |_app, kernel_data| {
@@ -420,8 +482,12 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> digest::ClientVer
     }
 }
 
-impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> SyscallDriver
-    for ShaDriver<'a, H, D>
+impl<
+        'a,
+        S256: digest::Digest<'a, Sha256>,
+        S384: digest::Digest<'a, Sha384>,
+        S512: digest::Digest<'a, Sha512>,
+    > SyscallDriver for ShaDriver<'a, S256, S384, S512>
 {
     /// Setup and run the HMAC hardware
     ///
@@ -538,10 +604,8 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> SyscallDriver
         self.apps
             .enter(processid, |app, kernel_data| {
                 match command_num {
-                    // set_algorithm
-                    0 => match data1 {
-                        _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
-                    },
+                    // exists
+                    0 => CommandReturn::success(),
 
                     // run
                     1 => {
@@ -646,6 +710,28 @@ impl<'a, H: digest::Digest<'a, D>, D: digest::DigestAlgorithm> SyscallDriver
                         }
                     }
 
+                    // set SHA type
+                    6 => {
+                        match data1 {
+                            // SHA256
+                            0 => {
+                                app.sha_operation = Some(ShaOperation::Sha256);
+                                CommandReturn::success()
+                            }
+                            // SHA384
+                            1 => {
+                                app.sha_operation = Some(ShaOperation::Sha384);
+                                CommandReturn::success()
+                            }
+                            // SHA512
+                            2 => {
+                                app.sha_operation = Some(ShaOperation::Sha512);
+                                CommandReturn::success()
+                            }
+                            _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
+                        }
+                    }
+
                     // default
                     _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
                 }
@@ -668,5 +754,6 @@ enum UserSpaceOp {
 #[derive(Default)]
 pub struct App {
     pending_run_app: Option<ProcessId>,
+    sha_operation: Option<ShaOperation>,
     op: Cell<Option<UserSpaceOp>>,
 }
