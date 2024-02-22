@@ -18,6 +18,8 @@ use capsules_core::virtualizers::virtual_aes_ccm::MuxAES128CCM;
 use capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm;
 use kernel::component::Component;
 use kernel::deferred_call::DeferredCallClient;
+use kernel::hil::gpio::Configure;
+use kernel::hil::gpio::FloatingState;
 use kernel::hil::i2c::{I2CMaster, I2CSlave};
 use kernel::hil::led::LedLow;
 use kernel::hil::symmetric_encryption::AES128;
@@ -98,12 +100,6 @@ pub struct Platform {
     >,
     ieee802154_radio: &'static capsules_extra::ieee802154::RadioDriver<'static>,
     button: &'static capsules_core::button::Button<'static, nrf52840::gpio::GPIOPin<'static>>,
-    pconsole: &'static capsules_core::process_console::ProcessConsole<
-        'static,
-        { capsules_core::process_console::DEFAULT_COMMAND_HISTORY_LEN },
-        VirtualMuxAlarm<'static, nrf52840::rtc::Rtc<'static>>,
-        components::process_console::Capability,
-    >,
     console: &'static capsules_core::console::Console<'static>,
     gpio: &'static capsules_core::gpio::GPIO<'static, nrf52840::gpio::GPIOPin<'static>>,
     led: &'static capsules_core::led::LedDriver<
@@ -384,18 +380,7 @@ pub unsafe fn start_particle_boron() -> (
 
     // Create a shared UART channel for the console and for kernel debug.
     let uart_mux = components::console::UartMuxComponent::new(uart_channel, 115200)
-        .finalize(components::uart_mux_component_static!());
-
-    let pconsole = components::process_console::ProcessConsoleComponent::new(
-        board_kernel,
-        uart_mux,
-        mux_alarm,
-        process_printer,
-        Some(cortexm4::support::reset),
-    )
-    .finalize(components::process_console_component_static!(
-        nrf52840::rtc::Rtc<'static>
-    ));
+        .finalize(components::uart_mux_component_static!(132));
 
     // Setup the console.
     let console = components::console::ConsoleComponent::new(
@@ -403,7 +388,7 @@ pub unsafe fn start_particle_boron() -> (
         capsules_core::console::DRIVER_NUM,
         uart_mux,
     )
-    .finalize(components::console_component_static!());
+    .finalize(components::console_component_static!(132, 132));
     // Create the debugger object that handles calls to `debug!()`.
     components::debug_writer::DebugWriterComponent::new(uart_mux)
         .finalize(components::debug_writer_component_static!());
@@ -522,9 +507,9 @@ pub unsafe fn start_particle_boron() -> (
     // I2C Master/Slave
     //--------------------------------------------------------------------------
 
-    let i2c_master_buffer = static_init!([u8; 32], [0; 32]);
-    let i2c_slave_buffer1 = static_init!([u8; 32], [0; 32]);
-    let i2c_slave_buffer2 = static_init!([u8; 32], [0; 32]);
+    let i2c_master_buffer = static_init!([u8; 128], [0; 128]);
+    let i2c_slave_buffer1 = static_init!([u8; 128], [0; 128]);
+    let i2c_slave_buffer2 = static_init!([u8; 128], [0; 128]);
 
     let i2c_master_slave = static_init!(
         I2CMasterSlaveDriver<nrf52840::i2c::TWI<'static>>,
@@ -545,7 +530,16 @@ pub unsafe fn start_particle_boron() -> (
     );
     base_peripherals.twi1.set_master_client(i2c_master_slave);
     base_peripherals.twi1.set_slave_client(i2c_master_slave);
+    // Note: strongly suggested to use external pull-ups for higher speeds
+    //       to maintain signal integrity.
     base_peripherals.twi1.set_speed(nrf52840::i2c::Speed::K400);
+
+    // I2C pin cfg for target
+    nrf52840_peripherals.gpio_port[I2C_SDA_PIN].set_i2c_pin_cfg();
+    nrf52840_peripherals.gpio_port[I2C_SCL_PIN].set_i2c_pin_cfg();
+    // Enable internal pull-ups
+    nrf52840_peripherals.gpio_port[I2C_SDA_PIN].set_floating_state(FloatingState::PullUp);
+    nrf52840_peripherals.gpio_port[I2C_SCL_PIN].set_floating_state(FloatingState::PullUp);
 
     //--------------------------------------------------------------------------
     // FINAL SETUP AND BOARD BOOT
@@ -560,7 +554,6 @@ pub unsafe fn start_particle_boron() -> (
         button,
         ble_radio,
         ieee802154_radio,
-        pconsole,
         console,
         led,
         gpio,
@@ -585,7 +578,6 @@ pub unsafe fn start_particle_boron() -> (
     CHIP = Some(chip);
 
     debug!("Particle Boron: Initialization complete. Entering main loop\r");
-    let _ = platform.pconsole.start();
 
     //--------------------------------------------------------------------------
     // PROCESSES AND MAIN LOOP
@@ -607,12 +599,12 @@ pub unsafe fn start_particle_boron() -> (
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,

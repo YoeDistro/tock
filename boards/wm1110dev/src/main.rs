@@ -91,6 +91,7 @@ type SHT4xSensor = components::sht4x::SHT4xComponentType<
     capsules_core::virtualizers::virtual_i2c::I2CDevice<'static, nrf52840::i2c::TWI<'static>>,
 >;
 type TemperatureDriver = components::temperature::TemperatureComponentType<SHT4xSensor>;
+type HumidityDriver = components::humidity::HumidityComponentType<SHT4xSensor>;
 
 /// Supported drivers by the platform
 pub struct Platform {
@@ -111,7 +112,7 @@ pub struct Platform {
         >,
     >,
     temperature: &'static TemperatureDriver,
-    humidity: &'static capsules_extra::humidity::HumiditySensor<'static>,
+    humidity: &'static HumidityDriver,
     lr1110_gpio: &'static capsules_core::gpio::GPIO<'static, nrf52840::gpio::GPIOPin<'static>>,
     lr1110_spi: &'static capsules_core::spi_controller::Spi<
         'static,
@@ -319,8 +320,8 @@ pub unsafe fn start() -> (
     //--------------------------------------------------------------------------
 
     // Enable the power supply for the I2C bus and attached sensors.
-    let _ = &nrf52840_peripherals.gpio_port[I2C_PWR].make_output();
-    let _ = &nrf52840_peripherals.gpio_port[I2C_PWR].set();
+    nrf52840_peripherals.gpio_port[I2C_PWR].make_output();
+    nrf52840_peripherals.gpio_port[I2C_PWR].set();
 
     let mux_i2c = components::i2c::I2CMuxComponent::new(&base_peripherals.twi1, None)
         .finalize(components::i2c_mux_component_static!(nrf52840::i2c::TWI));
@@ -351,7 +352,7 @@ pub unsafe fn start() -> (
         capsules_extra::humidity::DRIVER_NUM,
         sht4x,
     )
-    .finalize(components::humidity_component_static!());
+    .finalize(components::humidity_component_static!(SHT4xSensor));
 
     //--------------------------------------------------------------------------
     // LoRa (SPI + GPIO)
@@ -492,12 +493,12 @@ pub unsafe fn start() -> (
         board_kernel,
         chip,
         core::slice::from_raw_parts(
-            &_sapps as *const u8,
-            &_eapps as *const u8 as usize - &_sapps as *const u8 as usize,
+            core::ptr::addr_of!(_sapps),
+            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
         ),
         core::slice::from_raw_parts_mut(
-            &mut _sappmem as *mut u8,
-            &_eappmem as *const u8 as usize - &_sappmem as *const u8 as usize,
+            core::ptr::addr_of_mut!(_sappmem),
+            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
         ),
         &mut PROCESSES,
         &FAULT_RESPONSE,
