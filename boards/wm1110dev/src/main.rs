@@ -68,9 +68,10 @@ pub mod io;
 
 // How should the kernel respond when a process faults. For this board we choose
 // to stop the app and print a notice, but not immediately panic.
-const FAULT_RESPONSE: kernel::process::StopWithDebugFaultPolicy =
-    kernel::process::StopWithDebugFaultPolicy {};
+//const FAULT_RESPONSE: kernel::process::StopWithDebugFaultPolicy =
+//    kernel::process::StopWithDebugFaultPolicy {};
 
+const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
 // Number of concurrent processes this platform supports.
 const NUM_PROCS: usize = 8;
 
@@ -93,6 +94,8 @@ type SHT4xSensor = components::sht4x::SHT4xComponentType<
 type TemperatureDriver = components::temperature::TemperatureComponentType<SHT4xSensor>;
 type HumidityDriver = components::humidity::HumidityComponentType<SHT4xSensor>;
 
+type NonvolatileDriver = components::nonvolatile_storage::NonvolatileStorageComponentType;
+
 /// Supported drivers by the platform
 pub struct Platform {
     console: &'static capsules_core::console::Console<'static>,
@@ -104,6 +107,7 @@ pub struct Platform {
     >,
     rng: &'static capsules_core::rng::RngDriver<'static>,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
+    nonvolatile_storage: &'static NonvolatileDriver,
     alarm: &'static capsules_core::alarm::AlarmDriver<
         'static,
         capsules_core::virtualizers::virtual_alarm::VirtualMuxAlarm<
@@ -136,6 +140,9 @@ impl SyscallDriverLookup for Platform {
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
+            capsules_extra::nonvolatile_storage_driver::DRIVER_NUM => {
+                f(Some(self.nonvolatile_storage))
+            }
             LORA_SPI_DRIVER_NUM => f(Some(self.lr1110_spi)),
             LORA_GPIO_DRIVER_NUM => f(Some(self.lr1110_gpio)),
             kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
@@ -427,6 +434,23 @@ pub unsafe fn start() -> (
     .finalize(components::rng_component_static!());
 
     //--------------------------------------------------------------------------
+    // NONVOLATILE STORAGE
+    //--------------------------------------------------------------------------
+
+    let nonvolatile_storage = components::nonvolatile_storage::NonvolatileStorageComponent::new(
+        board_kernel,
+        capsules_extra::nonvolatile_storage_driver::DRIVER_NUM,
+        &base_peripherals.nvmc,
+        0xFC000,  // Start address for userspace accessible region
+        4096 * 4, // Length of userspace accessible region (16 pages)
+        0,        // No kernel access
+        0,
+    )
+    .finalize(components::nonvolatile_storage_component_static!(
+        nrf52840::nvmc::Nvmc
+    ));
+
+    //--------------------------------------------------------------------------
     // FINAL SETUP AND BOARD BOOT
     //--------------------------------------------------------------------------
 
@@ -443,6 +467,7 @@ pub unsafe fn start() -> (
         gpio,
         rng,
         alarm,
+        nonvolatile_storage,
         ipc: kernel::ipc::IPC::new(
             board_kernel,
             kernel::ipc::DRIVER_NUM,
