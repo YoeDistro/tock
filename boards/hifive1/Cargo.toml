@@ -12,7 +12,7 @@ edition.workspace = true
 [dependencies]
 components = { path = "../components" }
 rv32i = { path = "../../arch/rv32i" }
-kernel = { path = "../../kernel" }
+kernel = { path = "../../kernel", features = ["debug_load_processes", "debug_process_credentials"] }
 e310_g002 = { path = "../../chips/e310_g002" }
 sifive = { path = "../../chips/sifive" }
 
