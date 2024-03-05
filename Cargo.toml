@@ -31,6 +31,7 @@ members = [
     "boards/wm1110dev",
     "boards/makepython-nrf52840",
     "boards/nordic/nrf52840dk",
+    "boards/nordic/nrf52840dk-bonus",
     "boards/nordic/nrf52840_dongle",
     "boards/nordic/nrf52dk",
     "boards/sma_q3",
