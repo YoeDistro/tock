@@ -19,12 +19,12 @@ use kernel::capabilities;
 use kernel::component::Component;
 use kernel::hil;
 use kernel::hil::led::LedLow;
-use kernel::platform::chip::Chip;
+// use kernel::platform::chip::Chip;
 use kernel::platform::scheduler_timer::VirtualSchedulerTimer;
 use kernel::platform::{KernelResources, SyscallDriverLookup};
 use kernel::scheduler::cooperative::CooperativeSched;
 use kernel::utilities::registers::interfaces::ReadWriteable;
-use kernel::Kernel;
+// use kernel::Kernel;
 use kernel::{create_capability, debug, static_init};
 use rv32i::csr;
 
@@ -43,7 +43,7 @@ static mut CHIP: Option<&'static e310_g002::chip::E310x<E310G002DefaultPeriphera
 static mut PROCESS_PRINTER: Option<&'static kernel::process::ProcessPrinterText> = None;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
+// const FAULT_RESPONSE: kernel::process::PanicFaultPolicy = kernel::process::PanicFaultPolicy {};
 
 /// Dummy buffer that causes the linker to reserve enough space for the stack.
 #[no_mangle]
@@ -124,52 +124,52 @@ impl KernelResources<e310_g002::chip::E310x<'static, E310G002DefaultPeripherals<
     }
 }
 
-/// For the HiFive1, if load_process is inlined, it leads to really large stack utilization in
-/// main. By wrapping it in a non-inlined function, this reduces the stack utilization once
-/// processes are running.
-#[inline(never)]
-fn load_processes_not_inlined<C: Chip>(board_kernel: &'static Kernel, chip: &'static C) {
-    // These symbols are defined in the linker script.
-    extern "C" {
-        /// Beginning of the ROM region containing app images.
-        static _sapps: u8;
-        /// End of the ROM region containing app images.
-        static _eapps: u8;
-        /// Beginning of the RAM region for app memory.
-        static mut _sappmem: u8;
-        /// End of the RAM region for app memory.
-        static _eappmem: u8;
-    }
+// /// For the HiFive1, if load_process is inlined, it leads to really large stack utilization in
+// /// main. By wrapping it in a non-inlined function, this reduces the stack utilization once
+// /// processes are running.
+// #[inline(never)]
+// fn load_processes_not_inlined<C: Chip>(board_kernel: &'static Kernel, chip: &'static C) {
+//     // These symbols are defined in the linker script.
+//     extern "C" {
+//         /// Beginning of the ROM region containing app images.
+//         static _sapps: u8;
+//         /// End of the ROM region containing app images.
+//         static _eapps: u8;
+//         /// Beginning of the RAM region for app memory.
+//         static mut _sappmem: u8;
+//         /// End of the RAM region for app memory.
+//         static _eappmem: u8;
+//     }
 
-    let app_flash = unsafe {
-        core::slice::from_raw_parts(
-            core::ptr::addr_of!(_sapps),
-            core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
-        )
-    };
+//     let app_flash = unsafe {
+//         core::slice::from_raw_parts(
+//             core::ptr::addr_of!(_sapps),
+//             core::ptr::addr_of!(_eapps) as usize - core::ptr::addr_of!(_sapps) as usize,
+//         )
+//     };
 
-    let app_memory = unsafe {
-        core::slice::from_raw_parts_mut(
-            core::ptr::addr_of_mut!(_sappmem),
-            core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
-        )
-    };
+//     let app_memory = unsafe {
+//         core::slice::from_raw_parts_mut(
+//             core::ptr::addr_of_mut!(_sappmem),
+//             core::ptr::addr_of!(_eappmem) as usize - core::ptr::addr_of!(_sappmem) as usize,
+//         )
+//     };
 
-    let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
-    kernel::process::load_processes(
-        board_kernel,
-        chip,
-        app_flash,
-        app_memory,
-        unsafe { &mut PROCESSES },
-        &FAULT_RESPONSE,
-        &process_mgmt_cap,
-    )
-    .unwrap_or_else(|err| {
-        debug!("Error loading processes!");
-        debug!("{:?}", err);
-    });
-}
+//     let process_mgmt_cap = create_capability!(capabilities::ProcessManagementCapability);
+//     kernel::process::load_processes(
+//         board_kernel,
+//         chip,
+//         app_flash,
+//         app_memory,
+//         unsafe { &mut PROCESSES },
+//         &FAULT_RESPONSE,
+//         &process_mgmt_cap,
+//     )
+//     .unwrap_or_else(|err| {
+//         debug!("Error loading processes!");
+//         debug!("{:?}", err);
+//     });
+// }
 
 /// This is in a separate, inline(never) function so that its stack frame is
 /// removed when this function returns. Otherwise, the stack space used for
