@@ -340,7 +340,7 @@ unsafe fn start() -> (
         scheduler_timer,
     };
 
-    load_processes_not_inlined(board_kernel, chip);
+    //load_processes_not_inlined(board_kernel, chip);
 
     (board_kernel, hifive1, chip)
 }
