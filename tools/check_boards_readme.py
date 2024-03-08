@@ -10,6 +10,7 @@ Check if all of the available boards are documented in the README.
 
 import os
 import re
+import sys
 
 SKIP = ["boards/components", "boards/nordic/nrf52_components"]
 
