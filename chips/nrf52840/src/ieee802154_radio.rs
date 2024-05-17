@@ -1186,7 +1186,6 @@ impl<'a> kernel::hil::radio::RadioConfig<'a> for Radio<'a> {
         _reg_write: &'static mut [u8],
         _reg_read: &'static mut [u8],
     ) -> Result<(), ErrorCode> {
-        self.radio_initialize();
         Ok(())
     }
 
