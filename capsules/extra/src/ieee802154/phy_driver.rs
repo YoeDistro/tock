@@ -1,45 +1,40 @@
 // Licensed under the Apache License, Version 2.0 or the MIT License.
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-// Copyright Tock Contributors 2022.
+// Copyright Tock Contributors 2024.
 
 //! IEEE 802.15.4 userspace interface for configuration and transmit/receive.
 //!
-//! Implements a userspace interface for sending and receiving IEEE 802.15.4
+//! Implements a userspace interface for sending and receiving raw IEEE 802.15.4
 //! frames.
 //!
 //! Sending - Userspace fully forms the 15.4 frame and passes it to the driver.
 //!
-//! Receiving - The driver receives 15.4 frames and passes them to the userprocess.
-//! To accomplish this, the userprocess must first `allow` a read/write ring buffer
-//! to the kernel. The kernel will then fill this buffer with received frames and
-//! schedule an upcall upon receipt of the first packet. When handling the upcall
-//! the userprocess must first `unallow` the buffer as described in section 4.4 of
-//! TRD104-syscalls. After unallowing the buffer, the userprocess must then immediately
-//! clear all pending/scheduled receive upcalls. This is done by either unsubscribing
-//! the receive upcall or subscribing a new receive upcall. Because the userprocess
-//! provides the buffer, it is responsible for adhering to this procedure. Failure
-//! to comply may result in dropped or malformed packets.
+//! Receiving - The driver receives 15.4 frames and passes them to the process.
+//! To accomplish this, the process must first `allow` a read/write ring buffer
+//! to the kernel. The kernel will then fill this buffer with received frames
+//! and schedule an upcall upon receipt of the first packet.
 //!
-//! The ring buffer provided by the userprocess must be of the form:
+//! The ring buffer provided by the process must be of the form:
 //!
 //! ```text
 //! | read index | write index | user_frame 0 | user_frame 1 | ... | user_frame n |
 //! ```
 //!
 //! `user_frame` denotes the 15.4 frame in addition to the relevant 3 bytes of
-//! metadata (offset to data payload, length of data payload, and the MIC len). The
-//! capsule assumes that this is the form of the buffer. Errors or deviation in
-//! the form of the provided buffer will likely result in incomplete or dropped packets.
+//! metadata (offset to data payload, length of data payload, and the MIC len).
+//! The capsule assumes that this is the form of the buffer. Errors or deviation
+//! in the form of the provided buffer will likely result in incomplete or
+//! dropped packets.
 //!
-//! Because the scheduled receive upcall must be handled by the userprocess, there is
-//! no guarantee as to when this will occur and if additional packets will be received
-//! prior to the upcall being handled. Without a ring buffer (or some equivalent data
-//! structure), the original packet will be lost. The ring buffer allows for the upcall
-//! to be scheduled and for all received packets to be passed to the process. The ring
-//! buffer is designed to overwrite old packets if the buffer becomes full. If the
-//! userprocess notices a high number of "dropped" packets, this may be the cause. The
-//! userproceess can mitigate this issue by increasing the size of the ring buffer
-//! provided to the capsule.
+//! Because the scheduled receive upcall must be handled by the process, there
+//! is no guarantee as to when this will occur and if additional packets will be
+//! received prior to the upcall being handled. Without a ring buffer (or some
+//! equivalent data structure), the original packet will be lost. The ring
+//! buffer allows for the upcall to be scheduled and for all received packets to
+//! be passed to the process. The ring buffer is designed to overwrite old
+//! packets if the buffer becomes full. If the process notices a high number of
+//! "dropped" packets, this may be the cause. The process can mitigate this
+//! issue by increasing the size of the ring buffer provided to the capsule.
 
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use kernel::hil;
@@ -130,9 +125,12 @@ impl<'a, R: hil::radio::Radio<'a>> RadioDriver<'a, R> {
                     .get_readonly_processbuffer(ro_allow::WRITE)
                     .and_then(|write| {
                         write.enter(|payload| {
-                            payload.copy_to_slice(kbuf);
+                            let frame_len = payload.len();
+                            let dst_start = hil::radio::PSDU_OFFSET;
+                            let dst_end = dst_start + frame_len;
+                            payload.copy_to_slice(&mut kbuf[dst_start..dst_end]);
 
-                            self.radio.transmit(kbuf, payload.len()).map_or_else(
+                            self.radio.transmit(kbuf, frame_len).map_or_else(
                                 |(errorcode, error_buf)| {
                                     self.kernel_tx.replace(error_buf);
                                     Err(errorcode)
@@ -202,9 +200,14 @@ impl<'a, R: hil::radio::Radio<'a>> SyscallDriver for RadioDriver<'a, R> {
     /// - `10`: Get the PAN ID.
     /// - `11`: Get the channel.
     /// - `12`: Get the transmission power.
-    /// - `27`: Transmit a frame (raw).
+    /// - `27`: Transmit a frame. The frame must be stored in the write RO allow
+    ///   buffer 0. The allowed buffer must be the length of the frame. The
+    ///   frame includes the PDSU (i.e., the MAC payload) _without_ the MFR
+    ///   (i.e., CRC) bytes.
     /// - `28`: Set long address.
     /// - `29`: Get the long MAC address.
+    /// - `30`: Turn the radio on.
+    /// - `31`: Turn the radio off.
     fn command(
         &self,
         command_number: usize,
@@ -291,6 +294,8 @@ impl<'a, R: hil::radio::Radio<'a>> SyscallDriver for RadioDriver<'a, R> {
                 let addr = u64::from_be_bytes(self.radio.get_address_long());
                 CommandReturn::success_u64(addr)
             }
+            30 => self.radio.start().into(),
+            31 => self.radio.stop().into(),
             _ => CommandReturn::failure(ErrorCode::NOSUPPORT),
         }
     }
@@ -443,4 +448,12 @@ impl<'a, R: hil::radio::Radio<'a>> hil::radio::RxClient for RadioDriver<'a, R> {
             }
         });
     }
+}
+
+impl<'a, R: hil::radio::Radio<'a>> hil::radio::ConfigClient for RadioDriver<'a, R> {
+    fn config_done(&self, _result: Result<(), ErrorCode>) {}
+}
+
+impl<'a, R: hil::radio::Radio<'a>> hil::radio::PowerClient for RadioDriver<'a, R> {
+    fn changed(&self, _on: bool) {}
 }
