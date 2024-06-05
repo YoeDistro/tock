@@ -333,6 +333,8 @@ impl<'a, R: hil::radio::Radio<'a>> hil::radio::RxClient for RadioDriver<'a, R> {
     ) {
         // Drop invalid packets or packets that had errors during reception.
         if !crc_valid || result.is_err() {
+            // Replace the RX buffer and drop the packet.
+            self.radio.set_receive_buffer(buf);
             return;
         }
 
@@ -447,6 +449,8 @@ impl<'a, R: hil::radio::Radio<'a>> hil::radio::RxClient for RadioDriver<'a, R> {
                     .ok();
             }
         });
+
+        self.radio.set_receive_buffer(buf);
     }
 }
 
