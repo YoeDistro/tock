@@ -4,7 +4,8 @@
 
 [build]
 rustflags = [
-  # Use the LLVM lld executable with the `-flavor gnu` flag.
+"-C", "linker=rust-lld",
+# Use the LLVM lld executable with the `-flavor gnu` flag.
   "-C", "linker-flavor=ld.lld",
   # Use static relocation model. See https://github.com/tock/tock/pull/2853
   "-C", "relocation-model=static",
