@@ -2,9 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 # Copyright Tock Contributors 2024.
 
+
+include = "../../cargo.config.toml"
+
 [build]
 target = "thumbv7em-none-eabi"
+rustflags = [
+  "-C", "linker-flavor=ld.lld",
+]
+
 
 [unstable]
+config-include = true
 unstable-options = true
 build-std = ["core", "compiler_builtins" ]
+
