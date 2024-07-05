@@ -56,14 +56,16 @@ impl fmt::Debug for ProcessCheckError {
 
 /// What a AppCredentialsChecker decided a particular application's credential
 /// indicates about the runnability of an application binary.
-#[derive(Debug)]
-pub enum CheckResult {
+///
+/// The templated `AcceptedMetadata` type allows a credentials checking policy
+/// to include additional metadata with an accepted credential.
+pub enum CheckResult<AcceptedMetadata: Sized> {
     /// Accept the credential and run the binary.
     ///
     /// The associated value is an optional opaque nonzero usize the credential
     /// checker can return to communication some information about the accepted
     /// credential.
-    Accept(Option<core::num::NonZeroUsize>),
+    Accept(AcceptedMetadata),
     /// Go to the next credential or in the case of the last one fall
     /// back to the default policy.
     Pass,
@@ -71,13 +73,28 @@ pub enum CheckResult {
     Reject,
 }
 
+// We manually implement debug so that `AcceptedMetadata` does not need to be
+// `Debug`.
+impl<AcceptedMetadata> core::fmt::Debug for CheckResult<AcceptedMetadata> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheckResult::Accept(_) => write!(f, "Accept"),
+            CheckResult::Pass => write!(f, "Pass"),
+            CheckResult::Reject => write!(f, "Reject"),
+        }
+    }
+}
+
 /// Receives callbacks on whether a credential was accepted or not.
-pub trait AppCredentialsPolicyClient<'a> {
+///
+/// Accepted credentials include a generic `AcceptedMetadata` type which can
+/// provide additional information about why that credential was accepted.
+pub trait AppCredentialsPolicyClient<'a, AcceptedMetadata> {
     /// The check for a particular credential is complete. Result of the check
     /// is in `result`.
     fn check_done(
         &self,
-        result: Result<CheckResult, ErrorCode>,
+        result: Result<CheckResult<AcceptedMetadata>, ErrorCode>,
         credentials: TbfFooterV2Credentials,
         integrity_region: &'a [u8],
     );
@@ -93,19 +110,19 @@ pub trait AppCredentialsPolicyClient<'a> {
 /// signatures, it might set the optional value to the index of the public key
 /// in this list.
 #[derive(Copy, Clone)]
-pub struct AcceptedCredential {
+pub struct AcceptedCredential<AcceptedMetadata: Sized> {
     /// The credential stored in the footer that the credential checker
     /// accepted.
     pub credential: TbfFooterV2Credentials,
     /// An optional opaque value set by the credential checker to store metadata
     /// about the accepted credential. This is credential checker specific.
-    pub metadata: Option<core::num::NonZeroUsize>,
+    pub metadata: AcceptedMetadata,
 }
 
 /// Implements a Credentials Checking Policy.
-pub trait AppCredentialsPolicy<'a> {
+pub trait AppCredentialsPolicy<'a, AcceptedMetadata> {
     /// Set the client which gets notified after the credential check completes.
-    fn set_client(&self, client: &'a dyn AppCredentialsPolicyClient<'a>);
+    fn set_client(&self, client: &'a dyn AppCredentialsPolicyClient<'a, AcceptedMetadata>);
 
     /// Whether credentials are required or not.
     ///
@@ -194,7 +211,7 @@ pub trait AppIdPolicy: AppUniqueness + Compress {}
 impl<T: AppUniqueness + Compress> AppIdPolicy for T {}
 
 /// Client interface for the outcome of a process credential check.
-pub trait ProcessCheckerMachineClient {
+pub trait ProcessCheckerMachineClient<AcceptedMetadata> {
     /// Check is finished, and the check result is in `result`.0
     ///
     /// If `result` is `Ok(Option<Credentials>)`, the credentials were either
@@ -206,7 +223,7 @@ pub trait ProcessCheckerMachineClient {
     fn done(
         &self,
         process_binary: ProcessBinary,
-        result: Result<Option<AcceptedCredential>, ProcessCheckError>,
+        result: Result<Option<AcceptedCredential<AcceptedMetadata>>, ProcessCheckError>,
     );
 }
 
@@ -227,19 +244,19 @@ enum FooterCheckResult {
 
 /// Checks the footers for a `ProcessBinary` and decides whether to continue
 /// loading the process based on the checking policy in `checker`.
-pub struct ProcessCheckerMachine {
+pub struct ProcessCheckerMachine<AcceptedMetadata: 'static> {
     /// Client for receiving the outcome of the check.
-    client: OptionalCell<&'static dyn ProcessCheckerMachineClient>,
+    client: OptionalCell<&'static dyn ProcessCheckerMachineClient<AcceptedMetadata>>,
     /// Policy for checking credentials.
-    policy: OptionalCell<&'static dyn AppCredentialsPolicy<'static>>,
+    policy: OptionalCell<&'static dyn AppCredentialsPolicy<'static, AcceptedMetadata>>,
     /// Hold the process binary during checking.
     process_binary: OptionalCell<ProcessBinary>,
     /// Keep track of which footer is being parsed.
     footer_index: Cell<usize>,
 }
 
-impl ProcessCheckerMachine {
-    pub fn new(policy: &'static dyn AppCredentialsPolicy<'static>) -> Self {
+impl<AcceptedMetadata> ProcessCheckerMachine<AcceptedMetadata> {
+    pub fn new(policy: &'static dyn AppCredentialsPolicy<'static, AcceptedMetadata>) -> Self {
         Self {
             footer_index: Cell::new(0),
             policy: OptionalCell::new(policy),
@@ -248,11 +265,11 @@ impl ProcessCheckerMachine {
         }
     }
 
-    pub fn set_client(&self, client: &'static dyn ProcessCheckerMachineClient) {
+    pub fn set_client(&self, client: &'static dyn ProcessCheckerMachineClient<AcceptedMetadata>) {
         self.client.set(client);
     }
 
-    pub fn set_policy(&self, policy: &'static dyn AppCredentialsPolicy<'static>) {
+    pub fn set_policy(&self, policy: &'static dyn AppCredentialsPolicy<'static, AcceptedMetadata>) {
         self.policy.replace(policy);
     }
 
@@ -329,7 +346,7 @@ impl ProcessCheckerMachine {
     // it reached the end of the footer region.
     fn check_footer(
         process_binary: &ProcessBinary,
-        policy: &'static dyn AppCredentialsPolicy<'static>,
+        policy: &'static dyn AppCredentialsPolicy<'static, AcceptedMetadata>,
         next_footer: usize,
     ) -> FooterCheckResult {
         if config::CONFIG.debug_process_credentials {
@@ -443,10 +460,12 @@ impl ProcessCheckerMachine {
     }
 }
 
-impl AppCredentialsPolicyClient<'static> for ProcessCheckerMachine {
+impl<AcceptedMetadata> AppCredentialsPolicyClient<'static, AcceptedMetadata>
+    for ProcessCheckerMachine<AcceptedMetadata>
+{
     fn check_done(
         &self,
-        result: Result<CheckResult, ErrorCode>,
+        result: Result<CheckResult<AcceptedMetadata>, ErrorCode>,
         credentials: TbfFooterV2Credentials,
         _integrity_region: &'static [u8],
     ) {

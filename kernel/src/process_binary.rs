@@ -113,7 +113,7 @@ impl fmt::Debug for ProcessBinaryError {
 }
 
 /// A process stored in flash.
-pub struct ProcessBinary {
+pub struct ProcessBinary<AcceptedMetadata> {
     /// Process flash segment. This is the entire region of nonvolatile flash
     /// that the process occupies.
     pub flash: &'static [u8],
@@ -129,10 +129,10 @@ pub struct ProcessBinary {
     /// Optional credential that was used to approve this application. This is
     /// set if the process is checked by a credential checker and a specific
     /// credential was used to approve this process. Otherwise this is `None`.
-    pub credential: OptionalCell<AcceptedCredential>,
+    pub credential: OptionalCell<AcceptedCredential<AcceptedMetadata>>,
 }
 
-impl ProcessBinary {
+impl<AcceptedMetadata> ProcessBinary<AcceptedMetadata> {
     pub(crate) fn create(
         app_flash: &'static [u8],
         header_length: usize,
@@ -249,7 +249,7 @@ impl ProcessBinary {
         })
     }
 
-    pub fn get_credential(&self) -> Option<AcceptedCredential> {
+    pub fn get_credential(&self) -> Option<AcceptedCredential<AcceptedMetadata>> {
         self.credential.get()
     }
 
