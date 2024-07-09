@@ -164,11 +164,6 @@ ifneq (,$(findstring thumb,$(TARGET)))
   OBJDUMP_FLAGS += --arch-name=thumb
 endif
 
-# Additional flags that can be passed to cargo bloat via an environment
-# variable. Allows users to pass arbitrary flags supported by cargo bloat to
-# customize the output. By default, pass an empty string.
-CARGO_BLOAT_FLAGS ?=
-
 # Additional flags that can be passed to print_tock_memory_usage.py via an
 # environment variable. By default, pass an empty string.
 PTMU_ARGS ?=
@@ -217,7 +212,6 @@ ifeq ($(VERBOSE_MODE),1)
   $(info OBJDUMP_FLAGS                 = $(OBJDUMP_FLAGS))
   $(info OBJCOPY_FLAGS                 = $(OBJCOPY_FLAGS))
   $(info SIZE_FLAGS                    = $(SIZE_FLAGS))
-  $(info CARGO_BLOAT_FLAGS             = $(CARGO_BLOAT_FLAGS))
   $(info )
   $(info TOOLCHAIN                     = $(TOOLCHAIN))
   $(info SIZE                          = $(SIZE))
@@ -276,19 +270,6 @@ lst: $(TARGET_PATH)/release/$(PLATFORM).lst
 .PHONY: show-target
 show-target:
 	$(info $(TARGET))
-
-.PHONY: cargobloat
-cargobloat:
-	$(Q)$(CARGO) install cargo-bloat > /dev/null 2>&1 ||  echo 'Error: Failed to install cargo-bloat'
-	$(Q)RUSTFLAGS="$(RUSTC_FLAGS_TOCK)" CARGO_FLAGS="-Z build-std=core" $(CARGO) bloat --bin $(PLATFORM) --release $(CARGO_BLOAT_FLAGS)
-
-# To pass additional flags to `cargo cargobloatnoinline`, populate the
-# CARGO_BLOAT_FLAGS environment variable, e.g. run `CARGO_BLOAT_FLAGS=--crates
-# make cargobloatnoinline`
-.PHONY: cargobloatnoinline
-cargobloatnoinline:
-	$(Q)$(CARGO) install cargo-bloat > \dev\null 2>&1 ||  echo 'Error: Failed to install cargo-bloat'
-	$(Q)RUSTFLAGS="$(RUSTC_FLAGS_TOCK) -C inline-threshold=0" $(CARGO) bloat --bin $(PLATFORM) --release $(CARGO_BLOAT_FLAGS)
 
 .PHONY: stack-analysis
 #stack_analysis: RUSTC_FLAGS_TOCK += -Z emit-stack-sizes
