@@ -46,16 +46,6 @@ TARGET_DIRECTORY ?= $(TOCK_ROOT_DIRECTORY)target/
 # RUSTC_FLAGS_TOCK by default extends RUSTC_FLAGS with options that are global
 # to all Tock boards.
 #
-# We use `remap-path-prefix` to remove user-specific filepath strings for error
-# reporting from appearing in the generated binary. The first line is used for
-# remapping the tock directory, and the second line is for remapping paths to
-# the source code of the core library, which end up in the binary as a result of
-# our use of `-Zbuild-std=core`.
-RUSTC_FLAGS_TOCK ?= \
-  $(RUSTC_FLAGS) \
-  --remap-path-prefix=$(TOCK_ROOT_DIRECTORY)= \
-  --remap-path-prefix=$(RUSTC_SYSROOT)/lib/rustlib/src/rust/library/core=/core/
-
 # Disallow warnings only for continuous integration builds. Disallowing them
 # here using the `RUSTC_FLAGS_TOCK` variable ensures that warnings during
 # testing won't prevent compilation from succeeding.
