@@ -4,5 +4,6 @@
 
 [unstable]
 # Build test crates with the `panic = "abort"` strategy. Tests use `unwind` by
-# default which causes incompatability with `core` built via `-Zbuild-std`.
+# default which causes incompatibility with `core` built via `-Zbuild-std`.
+# This should be included on platforms that have tests defined.
 panic-abort-tests = true
