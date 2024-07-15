@@ -28,6 +28,7 @@ rustflags = [
   "-C", "symbol-mangling-version=v0",
   # Enable link-time-optimization
   "-C", "lto",
+  "-Z", "emit-stack-sizes",
 ]
 
 rustdocflags = [
