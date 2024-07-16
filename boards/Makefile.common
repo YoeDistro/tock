@@ -155,9 +155,6 @@ CARGO_FLAGS_TOCK ?= \
   --package $(PLATFORM) \
   --target-dir=$(TARGET_DIRECTORY) $(CARGO_FLAGS)
 
-# Add default flags to rustdoc.
-RUSTDOC_FLAGS_TOCK ?= -D warnings --document-private-items
-
 # Set the default flags we need for objdump to get a .lst file.
 OBJDUMP_FLAGS ?= --disassemble-all --source --section-headers --demangle
 
@@ -266,7 +263,7 @@ debug-lst:  $(TARGET_PATH)/debug/$(PLATFORM).lst
 
 .PHONY: doc
 doc: | target
-	$(Q)RUSTDOCFLAGS='$(RUSTDOC_FLAGS_TOCK)' $(CARGO) --color=always doc $(VERBOSE_FLAGS) --release --package $(PLATFORM)
+	$(Q)$(CARGO) --color=always doc $(VERBOSE_FLAGS) --release --package $(PLATFORM)
 
 
 .PHONY: lst
