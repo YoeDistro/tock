@@ -175,13 +175,6 @@ CARGO_BLOAT_FLAGS ?=
 # environment variable. By default, pass an empty string.
 PTMU_ARGS ?=
 
-# `cargo bloat` does not support `-Z build-std`, so we must remove it from cargo
-# flags. See https://github.com/RazrFalcon/cargo-bloat/issues/62.
-# As we aren't building the library we also remove the
-# `-Z build-std-features="core/optimize_for_size"` argument.
-CARGO_FLAGS_TOCK_NO_BUILD_STD := $(filter-out -Z build-std=core,$(CARGO_FLAGS_TOCK))
-CARGO_FLAGS_TOCK_NO_BUILD_STD := $(filter-out -Z build-std-features="core/optimize_for_size",$(CARGO_FLAGS_TOCK))
-
 # Check whether the system already has a sha256sum or shasum application
 # present. If not, use the custom shipped one.
 ifeq (, $(shell sha256sum --version 2>/dev/null))
@@ -215,7 +208,6 @@ ifeq ($(VERBOSE_MODE),1)
   $(info OBJCOPY_FLAGS                 = $(OBJCOPY_FLAGS))
   $(info CARGO_FLAGS                   = $(CARGO_FLAGS))
   $(info CARGO_FLAGS_TOCK              = $(CARGO_FLAGS_TOCK))
-  $(info CARGO_FLAGS_TOCK_NO_BUILD_STD = $(CARGO_FLAGS_TOCK_NO_BUILD_STD))
   $(info SIZE_FLAGS                    = $(SIZE_FLAGS))
   $(info CARGO_BLOAT_FLAGS             = $(CARGO_BLOAT_FLAGS))
   $(info )
@@ -279,7 +271,7 @@ show-target:
 # rustc` has been replaced with `cargo bloat`.
 .PHONY: cargobloat
 cargobloat:
-	$(Q)$(CARGO) bloat $(CARGO_FLAGS_TOCK_NO_BUILD_STD) --bin $(PLATFORM) --release $(CARGO_BLOAT_FLAGS)
+	$(Q)$(CARGO) bloat --bin $(PLATFORM) --release $(CARGO_BLOAT_FLAGS)
 
 # To pass additional flags to `cargo cargobloatnoinline`, populate the
 # CARGO_BLOAT_FLAGS environment variable, e.g. run `CARGO_BLOAT_FLAGS=--crates
