@@ -147,14 +147,6 @@ OBJCOPY_FLAGS ?= --strip-sections --strip-all --remove-section .apps
 # Cargo.toml.
 CARGO_FLAGS ?=
 
-# Add default flags to cargo. Boards can add additional options in
-# `CARGO_FLAGS`.
-CARGO_FLAGS_TOCK ?= \
-  $(VERBOSE_FLAGS) \
-  --target=$(TARGET) \
-  --package $(PLATFORM) \
-  --target-dir=$(TARGET_DIRECTORY) $(CARGO_FLAGS)
-
 # Set the default flags we need for objdump to get a .lst file.
 OBJDUMP_FLAGS ?= --disassemble-all --source --section-headers --demangle
 
@@ -202,7 +194,6 @@ ifeq ($(VERBOSE_MODE),1)
   $(info OBJDUMP_FLAGS                 = $(OBJDUMP_FLAGS))
   $(info OBJCOPY_FLAGS                 = $(OBJCOPY_FLAGS))
   $(info CARGO_FLAGS                   = $(CARGO_FLAGS))
-  $(info CARGO_FLAGS_TOCK              = $(CARGO_FLAGS_TOCK))
   $(info SIZE_FLAGS                    = $(SIZE_FLAGS))
   $(info )
   $(info TOOLCHAIN                     = $(TOOLCHAIN))
@@ -231,12 +222,12 @@ all: release
 # binary. This makes checking for Rust errors much faster.
 .PHONY: check
 check:
-	$(Q)$(CARGO) check $(VERBOSE_FLAGS) $(CARGO_FLAGS_TOCK)
+	$(Q)$(CARGO) check $(VERBOSE_FLAGS) $(CARGO_FLAGS)
 
 
 .PHONY: clean
 clean::
-	$(Q)$(CARGO) clean $(VERBOSE_FLAGS) --target-dir=$(TARGET_DIRECTORY)
+	$(Q)$(CARGO) clean $(VERBOSE_FLAGS)
 
 .PHONY: release
 release:  $(TARGET_PATH)/release/$(PLATFORM).bin
@@ -300,10 +291,10 @@ $(TOCK_ROOT_DIRECTORY)tools/sha256sum/target/debug/sha256sum:
 
 .PHONY: $(TARGET_PATH)/release/$(PLATFORM)
 $(TARGET_PATH)/release/$(PLATFORM):
-	$(Q)$(CARGO) rustc  $(CARGO_FLAGS_TOCK) --bin $(PLATFORM) --release
+	$(Q)$(CARGO) rustc  $(CARGO_FLAGS) --bin $(PLATFORM) --release
 	$(Q)$(SIZE) $(SIZE_FLAGS) $@
 
 .PHONY: $(TARGET_PATH)/debug/$(PLATFORM)
 $(TARGET_PATH)/debug/$(PLATFORM):
-	$(Q)$(CARGO) build  $(CARGO_FLAGS_TOCK) --bin $(PLATFORM)
+	$(Q)$(CARGO) build  $(CARGO_FLAGS) --bin $(PLATFORM)
 	$(Q)$(SIZE) $(SIZE_FLAGS) $@
