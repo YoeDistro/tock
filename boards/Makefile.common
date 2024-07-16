@@ -63,6 +63,15 @@ ifeq ($(shell $(TOCK_ROOT_DIRECTORY)tools/semver.sh $(RUSTUP_VERSION) \< $(MINIM
   DUMMY := $(shell $(RUSTUP) update)
 endif
 endif
+
+# Verify that various required Rust components are installed. All of these steps
+# only have to be done once per Rust version, but will take some time when
+# compiling for the first time.
+ifneq ($(shell $(RUSTUP) target list | grep "$(TARGET) (installed)"),$(TARGET) (installed))
+  $(warning Request to compile for a missing TARGET, make will install in 5s)
+  $(warning Consider updating 'targets' in 'rust-toolchain.toml')
+  $(shell sleep 5s && $(RUSTUP) target add $(TARGET))
+endif
 endif # $(NO_RUSTUP)
 
 # Default location of target directory (relative to board makefile).
