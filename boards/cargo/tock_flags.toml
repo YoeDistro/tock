@@ -28,6 +28,7 @@ rustflags = [
   "-C", "symbol-mangling-version=v0",
   # Enable link-time-optimization
   "-C", "lto",
+  # Have rustc generate stack sizes for analyzing the size of stack frames.
   "-Z", "emit-stack-sizes",
 ]
 rustdocflags = [
