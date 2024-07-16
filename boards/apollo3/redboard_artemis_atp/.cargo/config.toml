@@ -10,5 +10,8 @@ include = [
 [build]
 target = "thumbv7em-none-eabi"
 
+[target.'cfg(target_arch = "arm")']
+runner = "./run.sh"
+
 [unstable]
 config-include = true
