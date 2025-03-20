@@ -19,7 +19,8 @@ use kernel::{capabilities, create_capability};
 use nrf52840::gpio::Pin;
 use nrf52840dk_lib::{self, PROCESSES};
 
-type ScreenDriver = components::screen::ScreenComponentType;
+type Screen = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
+type ScreenDriver = components::screen::ScreenSharedComponentType<Screen>;
 
 // State for loading and holding applications.
 // How should the kernel respond when a process faults.
@@ -155,13 +156,63 @@ pub unsafe fn main() {
     let ssd1306_sh1106 = components::sh1106::Sh1106Component::new(ssd1306_sh1106_i2c, true)
         .finalize(components::sh1106_component_static!(nrf52840::i2c::TWI));
 
-    let screen = components::screen::ScreenComponent::new(
+    // let screen = components::screen::ScreenComponent::new(
+    //     board_kernel,
+    //     capsules_extra::screen::DRIVER_NUM,
+    //     ssd1306_sh1106,
+    //     None,
+    // )
+    // .finalize(components::screen_component_static!(1032));
+
+    let apps_regions = kernel::static_init!(
+        [capsules_extra::screen_shared::AppScreenRegion; 3],
+        [
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortId::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::crc32_posix(
+                        "process_control".as_bytes()
+                    ))
+                    .unwrap()
+                ),
+                0,      // x
+                0,      // y
+                16 * 8, // width
+                7 * 8   // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortId::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::crc32_posix(
+                        "counter".as_bytes()
+                    ))
+                    .unwrap()
+                ),
+                0,     // x
+                7 * 8, // y
+                8 * 8, // width
+                1 * 8  // height
+            ),
+            capsules_extra::screen_shared::AppScreenRegion::new(
+                kernel::process::ShortId::Fixed(
+                    core::num::NonZeroU32::new(kernel::utilities::helpers::crc32_posix(
+                        "temperature".as_bytes()
+                    ))
+                    .unwrap()
+                ),
+                8 * 8, // x
+                7 * 8, // y
+                8 * 8, // width
+                1 * 8  // height
+            )
+        ]
+    );
+
+    let screen = components::screen::ScreenSharedComponent::new(
         board_kernel,
         capsules_extra::screen::DRIVER_NUM,
         ssd1306_sh1106,
-        None,
+        apps_regions,
     )
-    .finalize(components::screen_component_static!(1032));
+    .finalize(components::screen_shared_component_static!(1032, Screen));
 
     ssd1306_sh1106.init_screen();
 
