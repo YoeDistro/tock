@@ -4,7 +4,7 @@
 
 //! Provides public/private key encryption
 
-pub mod key_store;
+pub mod key_change;
 pub mod keys;
 pub mod rsa_math;
 pub mod signature;

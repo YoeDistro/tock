@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 // Copyright Tock Contributors 2025.
 
-//! Interface for a generic key store holding multiple cryptographic keys.
+//! Interface for a device that supports multiple keys with one active at a
+//! time.
 
 use crate::ErrorCode;
 
-pub trait KeyStoreClient {
+pub trait KeyChangeClient {
     fn activate_key_done(&self, index: usize, error: Result<(), ErrorCode>);
 }
 
-pub trait KeyStore<'a> {
-    /// Return the number of keys held by the key store.
+pub trait KeyChange<'a> {
+    /// Return the number of keys that the device can switch among.
     ///
     /// Each key must be identifiable by a consistent index.
     fn get_key_count(&self) -> usize;
@@ -29,5 +30,5 @@ pub trait KeyStore<'a> {
     /// - `Err(ErrorCode::INVAL)` if the index is not valid.
     fn activate_key(&self, index: usize) -> Result<(), ErrorCode>;
 
-    fn set_client(&self, client: &'a dyn KeyStoreClient);
+    fn set_client(&self, client: &'a dyn KeyChangeClient);
 }
