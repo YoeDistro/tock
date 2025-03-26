@@ -9,15 +9,24 @@ use p256::ecdsa::signature::hazmat::PrehashVerifier;
 
 use core::cell::Cell;
 use kernel::hil;
+use kernel::hil::public_key_crypto::key_change::KeyChangeClient;
 use kernel::utilities::cells::{MapCell, OptionalCell, TakeCell};
+use kernel::ErrorCode;
+
+enum State {
+    Verifying,
+    ChangingKey(usize),
+}
 
 pub struct EcdsaP256SignatureVerifier<'a> {
     verified: Cell<bool>,
     client: OptionalCell<&'a dyn hil::public_key_crypto::signature::ClientVerify<32, 64>>,
+    client_key_change: OptionalCell<&'a dyn hil::public_key_crypto::key_change::KeyChangeClient>,
     verifying_key: MapCell<ecdsa::VerifyingKey>,
     hash_storage: TakeCell<'static, [u8; 32]>,
     signature_storage: TakeCell<'static, [u8; 64]>,
     deferred_call: kernel::deferred_call::DeferredCall,
+    state: OptionalCell<State>,
 }
 
 impl<'a> EcdsaP256SignatureVerifier<'a> {
@@ -30,10 +39,12 @@ impl<'a> EcdsaP256SignatureVerifier<'a> {
         Self {
             verified: Cell::new(false),
             client: OptionalCell::empty(),
+            client_key_change: OptionalCell::empty(),
             verifying_key,
             hash_storage: TakeCell::empty(),
             signature_storage: TakeCell::empty(),
             deferred_call: kernel::deferred_call::DeferredCall::new(),
+            state: OptionalCell::empty(),
         }
     }
 }
@@ -70,6 +81,7 @@ impl<'a> hil::public_key_crypto::signature::SignatureVerify<'a, 32, 64>
                         self.verified.set(vkey.verify_prehash(hash, &sig).is_ok());
                         self.hash_storage.replace(hash);
                         self.signature_storage.replace(signature);
+                        self.state.set(State::Verifying);
                         self.deferred_call.set();
                         Ok(())
                     })
@@ -83,15 +95,43 @@ impl<'a> hil::public_key_crypto::signature::SignatureVerify<'a, 32, 64>
     }
 }
 
+impl<'a> hil::public_key_crypto::key_change::KeyChange<'a> for EcdsaP256SignatureVerifier<'a> {
+    fn get_key_count(&self) -> usize {
+        1
+    }
+
+    fn activate_key(&self, index: usize) -> Result<(), ErrorCode> {
+        self.state.set(State::ChangingKey(index));
+        self.deferred_call.set();
+        Ok(())
+    }
+
+    fn set_client(&self, client: &'a dyn KeyChangeClient) {
+        self.client_key_change.replace(client);
+    }
+}
+
 impl<'a> kernel::deferred_call::DeferredCallClient for EcdsaP256SignatureVerifier<'a> {
     fn handle_deferred_call(&self) {
-        self.client.map(|client| {
-            self.hash_storage.take().map(|h| {
-                self.signature_storage.take().map(|s| {
-                    client.verification_done(Ok(self.verified.get()), h, s);
-                });
-            });
-        });
+        match self.state.take() {
+            Some(s) => match s {
+                State::Verifying => {
+                    self.client.map(|client| {
+                        self.hash_storage.take().map(|h| {
+                            self.signature_storage.take().map(|s| {
+                                client.verification_done(Ok(self.verified.get()), h, s);
+                            });
+                        });
+                    });
+                }
+                State::ChangingKey(index) => {
+                    self.client_key_change.map(|client| {
+                        client.activate_key_done(index, Ok(()));
+                    });
+                }
+            },
+            _ => {}
+        }
     }
 
     fn register(&'static self) {
