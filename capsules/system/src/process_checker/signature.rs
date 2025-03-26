@@ -4,6 +4,7 @@
 
 //! Signature credential checker for checking process credentials.
 
+use core::cell::Cell;
 use kernel::hil;
 use kernel::process_checker::CheckResult;
 use kernel::process_checker::{AppCredentialsPolicy, AppCredentialsPolicyClient};
@@ -24,7 +25,8 @@ use tock_tbf::types::TbfFooterV2CredentialsType;
 /// same as `SL`).
 pub struct AppCheckerSignature<
     'a,
-    S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+    S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+        + hil::public_key_crypto::key_change::KeyChange<'a>,
     H: hil::digest::DigestDataHash<'a, HL>,
     const HL: usize,
     const SL: usize,
@@ -37,11 +39,13 @@ pub struct AppCheckerSignature<
     credential_type: TbfFooterV2CredentialsType,
     credentials: OptionalCell<TbfFooterV2Credentials>,
     binary: OptionalCell<&'static [u8]>,
+    active_key_index: Cell<usize>,
 }
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
@@ -63,13 +67,15 @@ impl<
             credential_type,
             credentials: OptionalCell::empty(),
             binary: OptionalCell::empty(),
+            active_key_index: Cell::new(0),
         }
     }
 }
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
@@ -106,24 +112,28 @@ impl<
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
-    > hil::digest::ClientHash<HL> for AppCheckerSignature<'a, S, H, HL, SL>
+    > hil::public_key_crypto::key_change::KeyChangeClient
+    for AppCheckerSignature<'a, S, H, HL, SL>
 {
-    fn hash_done(&self, result: Result<(), ErrorCode>, digest: &'static mut [u8; HL]) {
-        match result {
+    fn activate_key_done(&self, _index: usize, error: Result<(), ErrorCode>) {
+        match error {
             Err(e) => {
-                self.hash.replace(digest);
+                // Could not switch to the requested key.
                 self.client.map(|c| {
                     let binary = self.binary.take().unwrap();
                     let cred = self.credentials.take().unwrap();
                     c.check_done(Err(e), cred, binary)
                 });
             }
-            Ok(()) => match self.signature.take() {
-                Some(sig) => {
+            Ok(()) => match (self.signature.take(), self.hash.take()) {
+                // Switched to the desired key, now use that key to do the
+                // verification.
+                (Some(sig), Some(digest)) => {
                     if let Err((e, d, s)) = self.verifier.verify(digest, sig) {
                         self.hash.replace(d);
                         self.signature.replace(s);
@@ -134,8 +144,13 @@ impl<
                         });
                     }
                 }
-                None => {
-                    self.hash.replace(digest);
+                (sig_option, digest_option) => {
+                    if let Some(sig) = sig_option {
+                        self.signature.replace(sig);
+                    }
+                    if let Some(digest) = digest_option {
+                        self.hash.replace(digest);
+                    }
                     self.client.map(|c| {
                         let binary = self.binary.take().unwrap();
                         let cred = self.credentials.take().unwrap();
@@ -149,7 +164,51 @@ impl<
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
+        H: hil::digest::DigestDataHash<'a, HL>,
+        const HL: usize,
+        const SL: usize,
+    > hil::digest::ClientHash<HL> for AppCheckerSignature<'a, S, H, HL, SL>
+{
+    fn hash_done(&self, result: Result<(), ErrorCode>, digest: &'static mut [u8; HL]) {
+        // Save the hash buffer in all cases. If there was an error then we just
+        // need to save the buffer, on success we need to keep the correct
+        // hash digest.
+        self.hash.replace(digest);
+
+        match result {
+            Err(e) => {
+                // Could not compute the hash.
+                self.client.map(|c| {
+                    let binary = self.binary.take().unwrap();
+                    let cred = self.credentials.take().unwrap();
+                    c.check_done(Err(e), cred, binary)
+                });
+            }
+            Ok(()) => {
+                // We got a hash. Next we need to select the first key to check.
+                // Activate the first key.
+                self.active_key_index.set(0);
+                match self.verifier.activate_key(0) {
+                    Err(_) => {
+                        self.client.map(|c| {
+                            let binary = self.binary.take().unwrap();
+                            let cred = self.credentials.take().unwrap();
+                            c.check_done(Err(ErrorCode::FAIL), cred, binary)
+                        });
+                    }
+                    Ok(()) => {}
+                };
+            }
+        }
+    }
+}
+
+impl<
+        'a,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
@@ -163,7 +222,8 @@ impl<
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
@@ -179,23 +239,58 @@ impl<
         self.hash.replace(hash);
         self.signature.replace(signature);
 
-        self.client.map(|c| {
-            let binary = self.binary.take().unwrap();
-            let cred = self.credentials.take().unwrap();
-            let check_result = if result.unwrap_or(false) {
-                Ok(CheckResult::Accept(None))
-            } else {
-                Ok(CheckResult::Pass)
-            };
+        // Check if the verification was successful. If so, we can issue the
+        // callback.
+        if result.unwrap_or(false) {
+            self.client.map(|c| {
+                let binary = self.binary.take().unwrap();
+                let cred = self.credentials.take().unwrap();
+                c.check_done(
+                    Ok(CheckResult::Accept(Some(
+                        kernel::process_checker::CheckResultAcceptMetadata {
+                            metadata: self.active_key_index.get(),
+                        },
+                    ))),
+                    cred,
+                    binary,
+                )
+            });
+        } else {
+            // The current key did not verify the signature. Check if there are
+            // more keys we can try or return `Pass`.
 
-            c.check_done(check_result, cred, binary)
-        });
+            let number_keys = self.verifier.get_key_count();
+            let next_key = self.active_key_index.get() + 1;
+            if next_key == number_keys {
+                // No more keys to try so we can report that we couldn't verify
+                // the key.
+                self.client.map(|c| {
+                    let binary = self.binary.take().unwrap();
+                    let cred = self.credentials.take().unwrap();
+                    c.check_done(Ok(CheckResult::Pass), cred, binary)
+                });
+            } else {
+                // Activate the next key.
+                self.active_key_index.set(next_key);
+                match self.verifier.activate_key(next_key) {
+                    Err(_) => {
+                        self.client.map(|c| {
+                            let binary = self.binary.take().unwrap();
+                            let cred = self.credentials.take().unwrap();
+                            c.check_done(Err(ErrorCode::FAIL), cred, binary)
+                        });
+                    }
+                    Ok(()) => {}
+                };
+            }
+        }
     }
 }
 
 impl<
         'a,
-        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>,
+        S: hil::public_key_crypto::signature::SignatureVerify<'static, HL, SL>
+            + hil::public_key_crypto::key_change::KeyChange<'a>,
         H: hil::digest::DigestDataHash<'a, HL>,
         const HL: usize,
         const SL: usize,
