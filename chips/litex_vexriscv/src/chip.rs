@@ -166,7 +166,7 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
             }
         }
 
-        mcause::Interrupt::Unknown(_) => {
+        mcause::Interrupt::Unknown => {
             debug!("interrupt of unknown cause");
         }
     }
