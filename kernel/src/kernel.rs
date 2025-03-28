@@ -27,6 +27,7 @@ use crate::platform::platform::{ProcessFault, SyscallDriverLookup, SyscallFilter
 use crate::platform::scheduler_timer::SchedulerTimer;
 use crate::platform::watchdog::WatchDog;
 use crate::process::ProcessLoadError;
+use crate::process::ProcessSlot;
 use crate::process::{self, ProcessId, Task};
 use crate::scheduler::{Scheduler, SchedulingDecision};
 use crate::syscall::SyscallDriver;
@@ -44,7 +45,7 @@ pub(crate) const MIN_QUANTA_THRESHOLD_US: u32 = 500;
 /// Main object for the kernel. Each board will need to create one.
 pub struct Kernel {
     /// This holds a pointer to the static array of Process pointers.
-    processes: &'static [ProcEntry],
+    processes: &'static [ProcessSlot],
 
     /// A counter which keeps track of how many process identifiers have been
     /// created. This is used to create new unique identifiers for processes.
@@ -60,70 +61,6 @@ pub struct Kernel {
     /// created and the data structures for grants have already been
     /// established.
     grants_finalized: Cell<bool>,
-}
-
-/// Represents a slot for a process in a [ProcessArray].
-///
-/// Holds both a refeference to the [process::Process] as well as a
-/// cached process identifier, which enables efficient selection as
-/// well as invalidating a process without yet deallocating the
-/// process itself.
-///
-/// # Invariants
-///
-/// If [valid_proc_id] is not [ID_INVALID], it should have the same value as [proc_ref]'s [ProcessId#identifier].
-#[derive(Clone)]
-pub struct ProcEntry {
-    /// The [ProcessId#identifier] for the process in [prof_ref], or
-    /// [ID_INVALID] if this [ProcEntry] does not represent an active
-    /// process.
-    pub(crate) valid_proc_id: Cell<usize>,
-    /// Optionally points to a process.
-    ///
-    /// If [valid_proc_id] is not [ID_INVALID], this must be a [Some].
-    pub(crate) proc_ref: Cell<Option<&'static dyn process::Process>>,
-}
-
-impl ProcEntry {
-    pub(crate) const ID_INVALID: usize = !0usize;
-
-    /// Return the underlying [process::Process] if and only if [self]
-    /// represents an active process.
-    pub fn get_active(&self) -> Option<&'static dyn process::Process> {
-        if self.valid_proc_id.get() != Self::ID_INVALID {
-            self.proc_ref.get()
-        } else {
-            None
-        }
-    }
-
-    pub fn get_with_id(&self, identifier: usize) -> Option<&'static dyn process::Process> {
-        if self.is_valid_for(identifier) {
-            self.proc_ref.get()
-        } else {
-            None
-        }
-    }
-
-    pub fn is_valid_for(&self, identifier: usize) -> bool {
-        self.valid_proc_id.get() == identifier
-    }
-}
-
-/// The type each board should allocate to hold processes.
-///
-/// Boards should use this type, an use init_process_array to create
-/// an array so they don't need to pay too much attention to at this
-/// type actually is.
-pub type ProcessArray<const NUM_PROCS: usize> = [ProcEntry; NUM_PROCS];
-
-/// Create an empty array of processes required to construct a new kernel type
-pub const fn init_process_array<const NUM_PROCS: usize>() -> ProcessArray<NUM_PROCS> {
-    const INVALID_ENTRY: ProcEntry = ProcEntry {
-        valid_proc_id: Cell::new(ProcEntry::ID_INVALID),
-        proc_ref: Cell::new(None),
-    };
-    [INVALID_ENTRY; NUM_PROCS]
 }
 
 /// Represents the different outcomes when trying to allocate a grant region
@@ -152,7 +89,7 @@ impl Kernel {
     /// Crucially, the processes included in the `processes` array MUST be valid
     /// to execute. Any credential checks or validation MUST happen before the
     /// `Process` object is included in this array.
-    pub const fn new(processes: &'static [ProcEntry]) -> Kernel {
+    pub const fn new(processes: &'static [ProcessSlot]) -> Kernel {
         Kernel {
             processes,
             process_identifier_max: Cell::new(0),
@@ -168,12 +105,23 @@ impl Kernel {
         // However, we are not guaranteed that the app still exists at that
         // index in the processes array. To avoid additional overhead, we do the
         // lookup and check here, rather than calling `.index()`.
-        if let Some(entry) = self.processes.get(processid.index) {
-            if entry.valid_proc_id.get() == processid.id() {
-                return entry.proc_ref.get();
+        match self.processes.get(processid.index) {
+            Some(pslot) => {
+                match pslot.get_active() {
+                    Some(process) => {
+                        // Check that the process stored here matches the identifier
+                        // in the `processid`.
+                        if process.processid() == processid {
+                            Some(process)
+                        } else {
+                            None
+                        }
+                    }
+                    None => None,
+                }
             }
+            _ => None,
         }
-        None
     }
 
     /// Run a closure on a specific process if it exists. If the process with a
@@ -246,10 +194,10 @@ impl Kernel {
     pub(crate) fn get_process_iter(
         &self,
     ) -> core::iter::FilterMap<
-        core::slice::Iter<ProcEntry>,
-        fn(&ProcEntry) -> Option<&'static dyn process::Process>,
+        core::slice::Iter<ProcessSlot>,
+        fn(&ProcessSlot) -> Option<&'static dyn process::Process>,
     > {
-        self.processes.iter().filter_map(ProcEntry::get_active)
+        self.processes.iter().filter_map(ProcessSlot::get_active)
     }
 
     /// Run a closure on every valid process. This will iterate the array of
@@ -363,6 +311,32 @@ impl Kernel {
     /// process before which ensures that the identifier is unique.
     pub(crate) fn create_process_identifier(&self) -> usize {
         self.process_identifier_max.get_and_increment()
+    }
+
+    /// Find the next slot that is available for storing a new &[`Process`].
+    fn next_available_process_entry(&self) -> Result<(usize, &ProcessSlot), ProcessLoadError> {
+        for (index, slot) in self.processes.iter().enumerate() {
+            if slot.proc.get().is_none() {
+                return Ok((index, slot));
+            }
+        }
+        Err(ProcessLoadError::NotEnoughMemory)
+    }
+
+    /// Store a new process in the process array.
+    ///
+    /// Because the [`ProcessId`] stores the index of the process in this array,
+    /// we create the [`ProcessId`] for the newly stored process and return it
+    /// on success.
+    pub(crate) fn allocate_next_available_process(
+        &'static self,
+        process: &'static dyn process::Process,
+    ) -> Result<ProcessId, ProcessLoadError> {
+        self.next_available_process_entry().map(|(idx, slot)| {
+            let identifier = self.create_process_identifier();
+            slot.proc.set(Some(process));
+            ProcessId::new(self, identifier, idx)
+        })
     }
 
     /// Cause all apps to fault.
@@ -1473,26 +1447,5 @@ impl Kernel {
                 }
             }
         }
-    }
-
-    fn next_available_process_entry(&self) -> Result<(usize, &ProcEntry), ProcessLoadError> {
-        for (index, entry) in self.processes.iter().enumerate() {
-            if entry.proc_ref.get().is_none() {
-                return Ok((index, entry));
-            }
-        }
-        Err(ProcessLoadError::NotEnoughMemory)
-    }
-
-    pub(crate) fn allocate_next_available_process(
-        &'static self,
-        process: &'static dyn process::Process,
-    ) -> Result<ProcessId, ProcessLoadError> {
-        self.next_available_process_entry().map(|(idx, entry)| {
-            let identifier = self.create_process_identifier();
-            entry.valid_proc_id.set(identifier);
-            entry.proc_ref.set(Some(process));
-            ProcessId::new(self, identifier, idx)
-        })
     }
 }

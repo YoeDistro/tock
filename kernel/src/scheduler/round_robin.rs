@@ -23,19 +23,19 @@ use core::num::NonZeroU32;
 
 use crate::collections::list::{List, ListLink, ListNode};
 use crate::platform::chip::Chip;
+use crate::process::ProcessSlot;
 use crate::process::StoppedExecutingReason;
 use crate::scheduler::{Scheduler, SchedulingDecision};
-use crate::ProcEntry;
 
 /// A node in the linked list the scheduler uses to track processes
 /// Each node holds a pointer to a slot in the processes array
 pub struct RoundRobinProcessNode<'a> {
-    proc: &'static ProcEntry,
+    proc: &'static ProcessSlot,
     next: ListLink<'a, RoundRobinProcessNode<'a>>,
 }
 
 impl<'a> RoundRobinProcessNode<'a> {
-    pub const fn new(proc: &'static ProcEntry) -> RoundRobinProcessNode<'a> {
+    pub const fn new(proc: &'static ProcessSlot) -> RoundRobinProcessNode<'a> {
         RoundRobinProcessNode {
             proc,
             next: ListLink::empty(),

@@ -17,18 +17,18 @@
 
 use crate::collections::list::{List, ListLink, ListNode};
 use crate::platform::chip::Chip;
+use crate::process::ProcessSlot;
 use crate::process::StoppedExecutingReason;
 use crate::scheduler::{Scheduler, SchedulingDecision};
-use crate::ProcEntry;
 
 /// A node in the linked list the scheduler uses to track processes
 pub struct CoopProcessNode<'a> {
-    proc: &'static ProcEntry,
+    proc: &'static ProcessSlot,
     next: ListLink<'a, CoopProcessNode<'a>>,
 }
 
 impl<'a> CoopProcessNode<'a> {
-    pub fn new(proc: &'static ProcEntry) -> CoopProcessNode<'a> {
+    pub fn new(proc: &'static ProcessSlot) -> CoopProcessNode<'a> {
         CoopProcessNode {
             proc,
             next: ListLink::empty(),

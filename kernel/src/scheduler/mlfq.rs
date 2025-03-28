@@ -27,9 +27,9 @@ use core::num::NonZeroU32;
 use crate::collections::list::{List, ListLink, ListNode};
 use crate::hil::time::{self, ConvertTicks, Ticks};
 use crate::platform::chip::Chip;
+use crate::process::ProcessSlot;
 use crate::process::StoppedExecutingReason;
 use crate::scheduler::{Scheduler, SchedulingDecision};
-use crate::ProcEntry;
 
 #[derive(Default)]
 struct MfProcState {
@@ -39,13 +39,13 @@ struct MfProcState {
 
 /// Nodes store per-process state
 pub struct MLFQProcessNode<'a> {
-    proc: &'static ProcEntry,
+    proc: &'static ProcessSlot,
     state: MfProcState,
     next: ListLink<'a, MLFQProcessNode<'a>>,
 }
 
 impl<'a> MLFQProcessNode<'a> {
-    pub fn new(proc: &'static ProcEntry) -> MLFQProcessNode<'a> {
+    pub fn new(proc: &'static ProcessSlot) -> MLFQProcessNode<'a> {
         MLFQProcessNode {
             proc,
             state: MfProcState::default(),
