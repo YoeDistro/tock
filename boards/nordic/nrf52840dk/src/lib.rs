@@ -454,7 +454,11 @@ pub unsafe fn start() -> (
     };
 
     // Setup space to store the core kernel data structure.
-    let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&*addr_of!(PROCESSES)));
+    // let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&*addr_of!(PROCESSES)));
+    let board_kernel = static_init!(
+        kernel::Kernel,
+        kernel::Kernel::new(&*addr_of!(PROCESSES.as_ref()))
+    );
 
     // Create (and save for panic debugging) a chip object to setup low-level
     // resources (e.g. MPU, systick).
