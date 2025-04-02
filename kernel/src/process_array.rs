@@ -65,12 +65,26 @@ pub struct ProcessArray<const NUM_PROCS: usize> {
 }
 
 impl<const NUM_PROCS: usize> ProcessArray<NUM_PROCS> {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         const EMPTY: ProcessSlot = ProcessSlot {
             proc: Cell::new(None),
         };
         Self {
             processes: [EMPTY; NUM_PROCS],
         }
+    }
+}
+
+impl<const NUM_PROCS: usize> From<ProcessArray<NUM_PROCS>> for [ProcessSlot; NUM_PROCS] {
+    fn from(array: ProcessArray<NUM_PROCS>) -> Self {
+        array.processes
+    }
+}
+
+impl<const NUM_PROCS: usize> core::ops::Index<usize> for ProcessArray<NUM_PROCS> {
+    type Output = ProcessSlot;
+
+    fn index(&self, i: usize) -> &ProcessSlot {
+        &self.processes[i]
     }
 }

@@ -129,7 +129,7 @@ mod kernel;
 mod memop;
 mod process_array;
 mod process_binary;
-pub mod process_loading;
+mod process_loading;
 mod process_policies;
 mod process_printer;
 mod process_standard;
