@@ -17,6 +17,7 @@
 
 use core::mem::MaybeUninit;
 use kernel::component::Component;
+use kernel::process::ProcessArray;
 use kernel::scheduler::cooperative::{CoopProcessNode, CooperativeSched};
 
 #[macro_export]
@@ -33,13 +34,11 @@ macro_rules! cooperative_component_static {
 }
 
 pub struct CooperativeComponent<const NUM_PROCS: usize> {
-    processes: &'static kernel::ProcessArray<NUM_PROCS>,
+    processes: &'static ProcessArray<NUM_PROCS>,
 }
 
 impl<const NUM_PROCS: usize> CooperativeComponent<NUM_PROCS> {
-    pub fn new(
-        processes: &'static kernel::ProcessArray<NUM_PROCS>,
-    ) -> CooperativeComponent<NUM_PROCS> {
+    pub fn new(processes: &'static ProcessArray<NUM_PROCS>) -> CooperativeComponent<NUM_PROCS> {
         CooperativeComponent { processes }
     }
 }
