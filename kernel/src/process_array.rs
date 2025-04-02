@@ -81,6 +81,24 @@ impl<const NUM_PROCS: usize> From<ProcessArray<NUM_PROCS>> for [ProcessSlot; NUM
     }
 }
 
+// impl<const NUM_PROCS: usize> From<ProcessArray<NUM_PROCS>> for &[ProcessSlot] {
+//     fn from(array: ProcessArray<NUM_PROCS>) -> Self {
+//         &array.processes
+//     }
+// }
+
+// impl<const NUM_PROCS: usize> From<ProcessArray<NUM_PROCS>> for [ProcessSlot] {
+//     fn from(array: ProcessArray<NUM_PROCS>) -> Self {
+//         array.processes
+//     }
+// }
+
+impl<const NUM_PROCS: usize> core::convert::AsRef<[ProcessSlot]> for ProcessArray<NUM_PROCS> {
+    fn as_ref(&self) -> &[ProcessSlot] {
+        &self.processes
+    }
+}
+
 impl<const NUM_PROCS: usize> core::ops::Index<usize> for ProcessArray<NUM_PROCS> {
     type Output = ProcessSlot;
 
@@ -88,3 +106,7 @@ impl<const NUM_PROCS: usize> core::ops::Index<usize> for ProcessArray<NUM_PROCS>
         &self.processes[i]
     }
 }
+
+// pub struct ProcessArrayRef {
+//     array: &ProcessArray<NUM_PROCS>,
+// }
