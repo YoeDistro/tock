@@ -23,6 +23,7 @@
 
 use capsules_extra::nonvolatile_to_pages::NonvolatileToPages;
 use core::mem::MaybeUninit;
+use hil::nonvolatile_storage::NonvolatileStorage;
 use kernel::component::Component;
 use kernel::deferred_call::DeferredCallClient;
 use kernel::dynamic_binary_storage::SequentialDynamicBinaryStorage;
@@ -50,20 +51,23 @@ macro_rules! sequential_binary_storage_component_static {
 
 pub struct SequentialBinaryStorageComponent<
     F: 'static + hil::flash::Flash + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
+    NV: NonvolatileStorage<'static>,
     C: Chip + 'static,
     D: ProcessStandardDebug + 'static,
 > {
     nv_flash: &'static F,
     loader_driver: &'static SequentialProcessLoaderMachine<'static, C, D>,
+    _nonvolatile: core::marker::PhantomData<NV>,
 }
 
 impl<
         F: 'static
             + hil::flash::Flash
             + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
+        NV: NonvolatileStorage<'static>,
         C: 'static + Chip,
         D: 'static + ProcessStandardDebug,
-    > SequentialBinaryStorageComponent<F, C, D>
+    > SequentialBinaryStorageComponent<F, NV, C, D>
 {
     pub fn new(
         nv_flash: &'static F,
@@ -72,6 +76,7 @@ impl<
         Self {
             nv_flash,
             loader_driver,
+            _nonvolatile: core::marker::PhantomData,
         }
     }
 }
@@ -80,17 +85,18 @@ impl<
         F: 'static
             + hil::flash::Flash
             + hil::flash::HasClient<'static, NonvolatileToPages<'static, F>>,
+        NV: NonvolatileStorage<'static> + 'static,
         C: 'static + Chip,
         D: 'static + ProcessStandardDebug,
-    > Component for SequentialBinaryStorageComponent<F, C, D>
+    > Component for SequentialBinaryStorageComponent<F, NV, C, D>
 {
     type StaticInput = (
         &'static mut MaybeUninit<<F as hil::flash::Flash>::Page>,
         &'static mut MaybeUninit<NonvolatileToPages<'static, F>>,
-        &'static mut MaybeUninit<SequentialDynamicBinaryStorage<'static, C, D>>,
+        &'static mut MaybeUninit<SequentialDynamicBinaryStorage<'static, 'static, C, D, NV>>,
         &'static mut MaybeUninit<[u8; kernel::dynamic_binary_storage::BUF_LEN]>,
     );
-    type Output = &'static SequentialDynamicBinaryStorage<'static, C, D>;
+    type Output = &'static SequentialDynamicBinaryStorage<'static, 'static, C, D, NV>;
 
     fn finalize(self, static_buffer: Self::StaticInput) -> Self::Output {
         let buffer = static_buffer
