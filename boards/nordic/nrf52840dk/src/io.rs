@@ -6,8 +6,6 @@ use core::fmt::Write;
 use kernel::debug::IoWrite;
 use kernel::hil::uart;
 use kernel::hil::uart::Configure;
-use kernel::process::ProcessArray;
-use kernel::process::ProcessSlot;
 
 use nrf52840::uart::{Uarte, UARTE0_BASE};
 
@@ -77,16 +75,12 @@ pub unsafe fn panic_fmt(pi: &core::panic::PanicInfo) -> ! {
     let led_kernel_pin = &nrf52840::gpio::GPIOPin::new(Pin::P0_13);
     let led = &mut led::LedLow::new(led_kernel_pin);
     let writer = &mut *addr_of_mut!(WRITER);
-    // let processes: [ProcessSlot; 8] = PROCESSES.into();
     debug::panic(
         &mut [led],
         writer,
         pi,
         &cortexm4::support::nop,
-        // processes,
-        // &processes,
-        // &*addr_of!(processes),
-        PROCESSES.as_ref(),
+        PROCESSES.unwrap().as_slice(),
         &*addr_of!(CHIP),
         &*addr_of!(PROCESS_PRINTER),
     )

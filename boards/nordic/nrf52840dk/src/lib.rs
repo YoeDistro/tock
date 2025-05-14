@@ -142,7 +142,7 @@ pub type Chip = nrf52840::chip::NRF52<'static, Nrf52840DefaultPeripherals<'stati
 pub const NUM_PROCS: usize = 8;
 
 /// Process array of this platform.
-pub static mut PROCESSES: ProcessArray<NUM_PROCS> = ProcessArray::new();
+static mut PROCESSES: Option<&'static ProcessArray<NUM_PROCS>> = None;
 
 static mut CHIP: Option<&'static nrf52840::chip::NRF52<Nrf52840DefaultPeripherals>> = None;
 static mut PROCESS_PRINTER: Option<&'static capsules_system::process_printer::ProcessPrinterText> =
@@ -453,12 +453,11 @@ pub unsafe fn start() -> (
         UartChannel::Pins(UartPins::new(UART_RTS, UART_TXD, UART_CTS, UART_RXD))
     };
 
+    let processes = static_init!(ProcessArray<NUM_PROCS>, ProcessArray::new());
+    PROCESSES = Some(processes);
+
     // Setup space to store the core kernel data structure.
-    // let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(&*addr_of!(PROCESSES)));
-    let board_kernel = static_init!(
-        kernel::Kernel,
-        kernel::Kernel::new(&*addr_of!(PROCESSES.as_ref()))
-    );
+    let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(processes.as_slice()));
 
     // Create (and save for panic debugging) a chip object to setup low-level
     // resources (e.g. MPU, systick).
@@ -889,7 +888,7 @@ pub unsafe fn start() -> (
     // PLATFORM SETUP, SCHEDULER, AND START KERNEL LOOP
     //--------------------------------------------------------------------------
 
-    let scheduler = components::sched::round_robin::RoundRobinComponent::new(&*addr_of!(PROCESSES))
+    let scheduler = components::sched::round_robin::RoundRobinComponent::new(processes)
         .finalize(components::round_robin_component_static!(NUM_PROCS));
 
     let platform = Platform {
