@@ -47,7 +47,7 @@ module.exports = {
 		if (await utils.cache.save(cacheDirs)) {
 			console.log('Stored Tock build cache.');
 		} else {
-			console.error('Failed to save cache.');
+			console.warn('Failed to save cache.');
 		}
 
 		/* Cannot read file list after cacheing if large
