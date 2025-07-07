@@ -160,6 +160,7 @@ pub enum DescriptorType {
     DeviceQualifier,
     OtherSpeedConfiguration,
     InterfacePower,
+    InterfaceAssociation = 11,
     HID = 0x21,
     Report = 0x22,
     CdcInterface = 0x24,
@@ -175,6 +176,7 @@ fn get_descriptor_type(byte: u8) -> Option<DescriptorType> {
         6 => Some(DescriptorType::DeviceQualifier),
         7 => Some(DescriptorType::OtherSpeedConfiguration),
         8 => Some(DescriptorType::InterfacePower),
+        11 => Some(DescriptorType::InterfaceAssociation),
         0x21 => Some(DescriptorType::HID),
         0x22 => Some(DescriptorType::Report),
         0x24 => Some(DescriptorType::CdcInterface),
@@ -632,7 +634,7 @@ impl Default for InterfaceDescriptor {
         InterfaceDescriptor {
             interface_number: 0,
             alternate_setting: 0,
-            num_endpoints: 0,      // (exluding default control endpoint)
+            num_endpoints: 0,      // (excluding default control endpoint)
             interface_class: 0xff, // vendor_specific
             interface_subclass: 0xab,
             interface_protocol: 0,
@@ -657,6 +659,50 @@ impl Descriptor for InterfaceDescriptor {
         buf[7].set(self.interface_protocol);
         buf[8].set(self.string_index);
         9
+    }
+}
+
+/// Interface Association Descriptor
+///
+/// Enables grouping interfaces that belong to a common function. See:
+/// <https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/usb-interface-association-descriptor>.
+pub struct InterfaceAssociationDescriptor {
+    pub first_interface: u8,
+    pub interface_count: u8,
+    pub interface_class: u8,
+    pub interface_subclass: u8,
+    pub interface_protocol: u8,
+    pub string_index: u8,
+}
+
+impl Default for InterfaceAssociationDescriptor {
+    fn default() -> Self {
+        Self {
+            first_interface: 0,
+            interface_count: 2,
+            interface_class: 0xe,    // CC_VIDEO
+            interface_subclass: 0x3, // SC_VIDEO_INTERFACE_COLLECTION
+            interface_protocol: 0,
+            string_index: 0,
+        }
+    }
+}
+
+impl Descriptor for InterfaceAssociationDescriptor {
+    fn size(&self) -> usize {
+        8
+    }
+
+    fn write_to_unchecked(&self, buf: &[Cell<u8>]) -> usize {
+        buf[0].set(8); // Size of descriptor
+        buf[1].set(DescriptorType::InterfaceAssociation as u8);
+        buf[2].set(self.first_interface);
+        buf[3].set(self.interface_count);
+        buf[4].set(self.interface_class);
+        buf[5].set(self.interface_subclass);
+        buf[6].set(self.interface_protocol);
+        buf[7].set(self.string_index);
+        8
     }
 }
 
@@ -939,6 +985,280 @@ impl Descriptor for StringDescriptor<'_> {
     }
 }
 
+//
+// For USB Video Device class (UVC)
+//
+
+/// <https://www.infineon.com/dgdl/Infineon-Implementing_a_usb_video_and_audio_composite_device_using_ez-usb_fx20_fx10_fx5n_fx5_controller-ApplicationNotes-v01_00-EN.pdf?fileId=8ac78c8c96250806019641f096a570ca#page=7.21>
+pub struct VideoControlInterfaceHeaderDescriptor {
+    pub revision_major: u8,
+    pub revision_minor: u8,
+    /// TotalLength - till output terminal
+    pub total_length: u16,
+    /// Clock frequency: 48MHz (Deprecated)
+    pub clock_frequency: u32,
+    pub streaming_interfaces_count: u8,
+    pub streaming_interfaces_number: u8,
+}
+
+impl Default for VideoControlInterfaceHeaderDescriptor {
+    fn default() -> Self {
+        Self {
+            revision_major: 1,
+            revision_minor: 0,
+            total_length: 0,
+            clock_frequency: 6000000,
+            streaming_interfaces_count: 1,
+            streaming_interfaces_number: 1,
+        }
+    }
+}
+
+impl Descriptor for VideoControlInterfaceHeaderDescriptor {
+    fn size(&self) -> usize {
+        0xd
+    }
+
+    fn write_to_unchecked(&self, buf: &[Cell<u8>]) -> usize {
+        buf[0].set(0xd); // Size of descriptor
+        buf[1].set(0x24); // USB_DESCTYPE_CS_INTERFACE
+        buf[2].set(0x1); // USB_VC_HEADER
+        buf[3].set(self.revision_minor);
+        buf[4].set(self.revision_major);
+        put_u16(&buf[5..7], self.total_length);
+        put_u32(&buf[7..11], self.clock_frequency);
+        buf[11].set(self.streaming_interfaces_count);
+        buf[12].set(self.streaming_interfaces_number);
+        0xd
+    }
+}
+
+//         0x0D,                           /* Descriptor size */
+//         0x24,                           /* Class Specific I/f Header Descriptor type */
+//         0x01,                           /* Descriptor Sub type : VC_HEADER */
+//         0x00,0x01,                      /* Revision of class spec : 1.0 */
+//         0x27,0x00,                      /* Total Size of class specific descriptors (till Output terminal) */
+//         0x80,0x8D,0x5B,0x00,            /* Clock frequency : 48MHz(Deprecated) */
+//         0x01,                           /* Number of streaming interfaces */
+//         0x01,                           /* Video streaming I/f 1 belongs to VC i/f */
+// /* Class-specific VC Interface Header Descriptor */
+// 0x0D, /* 0 bLength */
+// USB_DESCTYPE_CS_INTERFACE, /* 1 bDescriptorType - Class-specific Interface */
+// USB_VC_HEADER, /* 2 bDescriptorSubType - HEADER */
+// 0x10, 0x01, /* 3 bcdUVC - Video class revision 1.1 */
+// 0x28, 0x00, /* 5 wTotalLength - till output terminal */
+// WORD_CHARS(100000000), /* 7 dwClockFrequency - 100MHz (Deprecated) */
+// 0x01, /* 11 bInCollection - One Streaming Interface */
+// 0x01, /* 12 baInterfaceNr - Number of the Streaming interface */
+pub struct InputCameraTerminalDescriptor {
+    pub terminal_id: u8,
+    pub terminal_type: u16,
+    pub association_terminal: u8,
+    pub string_index: u8,
+    pub objective_focal_length_min: u16,
+    pub objective_focal_length_max: u16,
+    pub ocular_focal_length: u16,
+    pub controls: u16,
+}
+
+impl Default for InputCameraTerminalDescriptor {
+    fn default() -> Self {
+        Self {
+            terminal_id: 1,
+            terminal_type: 0x0201, // ITT_CAMERA type (CCD Sensor)
+            association_terminal: 0,
+            string_index: 0,
+            objective_focal_length_min: 0,
+            objective_focal_length_max: 0,
+            ocular_focal_length: 0,
+            controls: 0,
+        }
+    }
+}
+
+impl Descriptor for InputCameraTerminalDescriptor {
+    fn size(&self) -> usize {
+        0x11
+    }
+
+    fn write_to_unchecked(&self, buf: &[Cell<u8>]) -> usize {
+        buf[0].set(0x11); // Size of descriptor
+        buf[1].set(0x24); // USB_DESCTYPE_CS_INTERFACE
+        buf[2].set(0x1); // USB_VC_INPUT_TERMINAL
+        buf[3].set(self.terminal_id);
+        put_u16(&buf[4..6], self.terminal_type);
+        buf[6].set(self.association_terminal);
+        buf[7].set(self.string_index);
+        put_u16(&buf[8..10], self.objective_focal_length_min);
+        put_u16(&buf[10..12], self.objective_focal_length_max);
+        put_u16(&buf[12..14], self.ocular_focal_length);
+        buf[14].set(2); // size of controls field
+        put_u16(&buf[15..17], self.controls);
+        0x11
+    }
+}
+
+//        /* Input (Camera) Terminal Descriptor */
+//         0x11,                           /* Descriptor size */
+//         0x24,                           /* Class specific interface desc type */
+//         0x02,                           /* Input Terminal Descriptor type */
+//         0x01,                           /* ID of this terminal */
+//         0x01,0x02,                      /* Camera terminal type */
+//         0x00,                           /* No association terminal */
+//         0x00,                           /* String desc index : Not used */
+//         0x00,0x00,                      /* No optical zoom supported */
+//         0x00,0x00,                      /* No optical zoom supported */
+//         0x00,0x00,                      /* No optical zoom supported */
+//         0x02,                           /* Size of controls field for this terminal : 2 bytes */
+//         0x00,0x00,                 /* No controls supported */
+// /* Input Terminal (Camera) Descriptor - Represents the CCD sensor (Simulated here in this demo) */
+// 0x12, /* 0 bLength */
+// USB_DESCTYPE_CS_INTERFACE, /* 1 bDescriptorType - Class-specific Interface */
+// USB_VC_INPUT_TERMINAL, /* 2 bDescriptorSubType - INPUT TERMINAL */
+// 0x01, /* 3 bTerminalID */
+// 0x01, 0x02, /* 4 wTerminalType - ITT_CAMERA type (CCD Sensor) */
+// 0x00, /* 6 bAssocTerminal - No association */
+// 0x00, /* 7 iTerminal - Unused */
+// 0x00, 0x00, /* 8 wObjectiveFocalLengthMin - No optical zoom supported */
+// 0x00, 0x00, /* 10 wObjectiveFocalLengthMax - No optical zoom supported*/
+// 0x00, 0x00, /* 12 wOcularFocalLength - No optical zoom supported */
+// 0x03, /* 14 bControlSize - 3 bytes */
+// 0x00, 0x00, 0x00, /* 15 bmControls - No controls are supported */
+pub struct OutputTerminalDescriptor {
+    pub terminal_id: u8,
+    pub terminal_type: u16,
+    pub association_terminal: u8,
+    pub source_id: u8,
+    pub string_index: u8,
+}
+
+impl Default for OutputTerminalDescriptor {
+    fn default() -> Self {
+        Self {
+            terminal_id: 2,
+            terminal_type: 0x0101, // TT_STREAMING type USB streaming
+            association_terminal: 0,
+            source_id: 1,
+            string_index: 0,
+        }
+    }
+}
+
+impl Descriptor for OutputTerminalDescriptor {
+    fn size(&self) -> usize {
+        0x9
+    }
+
+    fn write_to_unchecked(&self, buf: &[Cell<u8>]) -> usize {
+        buf[0].set(0x9); // Size of descriptor
+        buf[1].set(0x24); // USB_DESCTYPE_CS_INTERFACE
+        buf[2].set(0x3); // USB_VC_OUPUT_TERMINAL
+        buf[3].set(self.terminal_id);
+        put_u16(&buf[4..6], self.terminal_type);
+        buf[6].set(self.association_terminal);
+        buf[7].set(self.source_id);
+        buf[8].set(self.string_index);
+        0x9
+    }
+}
+
+//         /* Output Terminal Descriptor */
+//         0x09,                           /* Descriptor size */
+//         0x24,                           /* Class specific interface desc type */
+//         0x03,                           /* Output Terminal Descriptor type */
+//         0x02,                           /* ID of this terminal */
+//         0x01,0x01,                      /* USB Streaming terminal type */
+//         0x00,                           /* No association terminal */
+//         0x01,                           /* Source ID : 1 : Connected to Extn Unit */
+//         0x00,                           /* String desc index : Not used */
+// /* Output Terminal Descriptor */
+// 0x09, /* 0 bLength */
+// USB_DESCTYPE_CS_INTERFACE, /* 1 bDescriptorType - Class-specific Interface */
+// USB_VC_OUPUT_TERMINAL, /* 2 bDescriptorSubType - OUTPUT TERMINAL */
+// 0x02, /* 3 bTerminalID */
+// 0x01, 0x01, /* 4 wTerminalType - TT_STREAMING type */
+// 0x00, /* 6 bAssocTerminal - No association */
+// 0x01, /* 7 bSourceID - Source is Input terminal 1 */
+// 0x00, /* 8 iTerminal - Unused */
+pub struct VideoStreamingInputHeaderDescriptor {
+    pub number_formats: u8,
+    pub total_size: u16,
+    pub endpoint_address: u8,
+    pub info: u8,
+    pub output_terminal_id: u8,
+    pub still_capture_method: u8,
+    pub trigger_support: u8,
+    pub trigger_usage: u8,
+    pub controls: u8,
+}
+
+impl Default for VideoStreamingInputHeaderDescriptor {
+    fn default() -> Self {
+        Self {
+            number_formats: 1,
+            total_size: 0x4D,
+            endpoint_address: 0x81,
+            info: 0, // No dynamic format change
+            output_terminal_id: 2,
+            still_capture_method: 0,
+            trigger_support: 0,
+            trigger_usage: 0,
+            controls: 0,
+        }
+    }
+}
+
+impl Descriptor for VideoStreamingInputHeaderDescriptor {
+    fn size(&self) -> usize {
+        0xe
+    }
+
+    fn write_to_unchecked(&self, buf: &[Cell<u8>]) -> usize {
+        buf[0].set(0xe); // Size of descriptor
+        buf[1].set(0x24); // USB_DESCTYPE_CS_INTERFACE
+        buf[2].set(0x1); // USB_VS_INPUT_HEADER
+        buf[3].set(self.number_formats);
+        put_u16(&buf[4..6], self.total_size);
+        buf[6].set(self.endpoint_address);
+        buf[7].set(self.info);
+        buf[8].set(self.output_terminal_id);
+        buf[9].set(self.still_capture_method);
+        buf[10].set(self.trigger_support);
+        buf[11].set(self.trigger_usage);
+        buf[12].set(1); // Size of controls field
+        buf[13].set(self.controls);
+        0xe
+    }
+}
+
+//        /* Class-specific Video Streaming Input Header Descriptor */
+//         0x0E,                           /* Descriptor size */
+//         0x24,                           /* Class-specific VS I/f Type */
+//         0x01,                           /* Descriptotor Subtype : Input Header */
+//         0x01,                           /* 1 format desciptor follows */
+//         0x4D,0x00,                      /* Total size of Class specific VS descr: 41 Bytes */
+//         0x81,             /* EP address for BULK video data */
+//         0x00,                           /* No dynamic format change supported */
+//         0x02,                           /* Output terminal ID : 4 */
+//         0x00,                           /* Still image capture method 1 supported */
+//         0x01,                           /* Hardware trigger NOT supported */
+//         0x00,                           /* Hardware to initiate still image capture NOT supported */
+//         0x01,                           /* Size of controls field : 1 byte */
+//         0x00,                           /* D2 : Compression quality supported */
+// /* Class-specific VS Interface Input Header Descriptor */
+// 0x0E, /* 0 bLength */
+// USB_DESCTYPE_CS_INTERFACE, /* 1 bDescriptorType - Class-specific Interface */
+// USB_VS_INPUT_HEADER, /* 2 bDescriptorSubType - INPUT HEADER */
+// 0x01, /* 3 bNumFormats - One format supported */
+// 0x47, 0x00, /* 4 wTotalLength - Size of class-specific VS descriptors */
+// (VIDEO_DATA_EP_NUM | 0x80), /* 6 bEndpointAddress - Iso EP for video streaming */
+// 0x00, /* 7 bmInfo - No dynamic format change */
+// 0x02, /* 8 bTerminalLink - Denotes the Output Terminal */
+// 0x01, /* 9 bStillCaptureMethod - Method 1 supported */
+// 0x00, /* 10 bTriggerSupport - No Hardware Trigger */
+// 0x00, /* 11 bTriggerUsage */
+// 0x01, /* 12 bControlSize - 1 byte */
+// 0x00, /* 13 bmaControls - No Controls supported */
 /// Parse a `u16` from two bytes as received on the bus
 fn get_u16(b0: u8, b1: u8) -> u16 {
     (b0 as u16) | ((b1 as u16) << 8)
@@ -953,4 +1273,12 @@ fn get_u32(b0: u8, b1: u8, b2: u8, b3: u8) -> u32 {
 fn put_u16(buf: &[Cell<u8>], n: u16) {
     buf[0].set((n & 0xff) as u8);
     buf[1].set((n >> 8) as u8);
+}
+
+/// Write a `u32` to a buffer for transmission on the bus
+fn put_u32(buf: &[Cell<u8>], n: u32) {
+    buf[0].set((n & 0xff) as u8);
+    buf[1].set((n >> 8) as u8);
+    buf[2].set((n >> 16) as u8);
+    buf[3].set((n >> 24) as u8);
 }
