@@ -148,10 +148,14 @@ ifneq ($(shell $(RUSTUP) show active-toolchain | grep "stable"),)
   # If the error from running --version shows a version mismatch we know the
   # installed toolchain is too old.
   ifneq ($(shell $(CARGO) rustc -- --version 2>&1 | grep "is not supported by the following packages"),)
-    $(warning Your stable rustc is older than the MSRV of this board)
-    $(warning make will update your stable rustc in 5s)
-    $(shell sleep 5)
+    $(warning Your stable rustc is older than the MSRV of this board.)
+    $(warning )
+    $(warning make will run `$(RUSTUP) update` to update your stable rustc in 10s.)
+    $(shell sleep 10)
     DUMMY := $(shell $(RUSTUP) update)
+  endif
+  ifneq ($(shell $(CARGO) rustc -- --version 2>&1 | grep "is not supported by the following packages"),)
+    $(error Rustup update failed. Please fix your rustup or update your rustc manually.)
   endif
 endif
 endif # $(NO_RUSTUP)
