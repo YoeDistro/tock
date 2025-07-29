@@ -70,15 +70,20 @@ pub unsafe fn panic_fmt(pi: &core::panic::PanicInfo) -> ! {
     let led_kernel_pin = &nrf52840::gpio::GPIOPin::new(Pin::P0_13);
     let led = &mut led::LedLow::new(led_kernel_pin);
     let writer = &mut *addr_of_mut!(WRITER);
-    crate::PANIC_RESOURCES.with(|resources| {
-        debug::panic(
-            &mut [led],
-            writer,
-            pi,
-            &cortexm4::support::nop,
-            resources.get_processes(),
-            resources.get_chip(),
-            resources.get_process_printer(),
+    crate::PANIC_RESOURCES.with(|optional_resources| {
+        optional_resources.map_or_else(
+            || loop {},
+            |resources| {
+                debug::panic(
+                    &mut [led],
+                    writer,
+                    pi,
+                    &cortexm4::support::nop,
+                    resources.get_processes(),
+                    resources.get_chip(),
+                    resources.get_process_printer(),
+                )
+            },
         )
     })
 }

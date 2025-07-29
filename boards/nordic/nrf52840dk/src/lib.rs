@@ -461,9 +461,6 @@ pub unsafe fn start_no_pconsole() -> (
     // Create an array to hold process references.
     let processes = components::process_array::ProcessArrayComponent::new()
         .finalize(components::process_array_component_static!(NUM_PROCS));
-    PANIC_RESOURCES.with(|resources| {
-        resources.set_processes(processes.as_slice());
-    });
 
     // Setup space to store the core kernel data structure.
     let board_kernel = static_init!(kernel::Kernel, kernel::Kernel::new(processes.as_slice()));
@@ -471,7 +468,10 @@ pub unsafe fn start_no_pconsole() -> (
     // Create (and save for panic debugging) a chip object to setup low-level
     // resources (e.g. MPU, systick).
     let chip = static_init!(Chip, nrf52840::chip::NRF52::new(nrf52840_peripherals));
-    PANIC_RESOURCES.with(|resources| {
+    PANIC_RESOURCES.set_chip(chip);
+
+    PANIC_RESOURCES.with_valid(|resources| {
+        resources.set_processes(processes.as_slice());
         resources.set_chip(chip);
     });
 
@@ -605,7 +605,7 @@ pub unsafe fn start_no_pconsole() -> (
     // Tool for displaying information about processes.
     let process_printer = components::process_printer::ProcessPrinterTextComponent::new()
         .finalize(components::process_printer_text_component_static!());
-    PANIC_RESOURCES.with(|resources| {
+    PANIC_RESOURCES.with_valid(|resources| {
         resources.set_process_printer(process_printer);
     });
 
