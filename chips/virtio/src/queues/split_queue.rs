@@ -831,6 +831,16 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         Ok(())
     }
 
+    pub fn notifyyy(&self) -> Result<(), ErrorCode> {
+        // Notify the queue. This must not fail, given that the SplitVirtqueue
+        // requires a transport to be set prior to initialization.
+        self.transport
+            .map(|t| t.queue_notify(self.queue_number.get()))
+            .unwrap();
+
+        Ok(())
+    }
+
     /// Attempt to take a buffer chain out of the Virtqueue used ring.
     ///
     /// Returns `None` if the used ring is empty.

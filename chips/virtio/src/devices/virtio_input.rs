@@ -18,12 +18,14 @@ use crate::queues::split_queue::{SplitVirtqueue, SplitVirtqueueClient, Virtqueue
 
 pub struct VirtIOInput<'a> {
     // virtqueue: &'a SplitVirtqueue<'a, 'b, 1>,
-    eventq: &'a SplitVirtqueue<'static, 'static, 1>,
+    eventq: &'a SplitVirtqueue<'static, 'static, 3>,
     statusq: &'a SplitVirtqueue<'static, 'static, 1>,
     // tx_header: OptionalCell<&'static mut [u8; 12]>,
     // tx_frame_info: Cell<(u16, usize)>,
     // rx_header: OptionalCell<&'static mut [u8]>,
-    event_buffer: OptionalCell<&'static mut [u8]>,
+    event_buffer1: OptionalCell<&'static mut [u8]>,
+    event_buffer2: OptionalCell<&'static mut [u8]>,
+    event_buffer3: OptionalCell<&'static mut [u8]>,
     status_buffer: OptionalCell<&'static mut [u8]>,
     // client: OptionalCell<&'a dyn EthernetAdapterDatapathClient>,
     // rx_enabled: Cell<bool>,
@@ -47,12 +49,14 @@ pub struct VirtIOInput<'a> {
 
 impl<'a> VirtIOInput<'a> {
     pub fn new(
-        eventq: &'a SplitVirtqueue<'static, 'static, 1>,
+        eventq: &'a SplitVirtqueue<'static, 'static, 3>,
         statusq: &'a SplitVirtqueue<'static, 'static, 1>,
         // tx_header: &'static mut [u8; 12],
         // rxqueue: &'a SplitVirtqueue<'static, 'static, 2>,
         // rx_header: &'static mut [u8],
-        event_buffer: &'static mut [u8],
+        event_buffer1: &'static mut [u8],
+        event_buffer2: &'static mut [u8],
+        event_buffer3: &'static mut [u8],
         status_buffer: &'static mut [u8],
     ) -> Self {
         eventq.enable_used_callbacks();
@@ -61,7 +65,9 @@ impl<'a> VirtIOInput<'a> {
         Self {
             eventq,
             statusq,
-            event_buffer: OptionalCell::new(event_buffer),
+            event_buffer1: OptionalCell::new(event_buffer1),
+            event_buffer2: OptionalCell::new(event_buffer2),
+            event_buffer3: OptionalCell::new(event_buffer3),
             status_buffer: OptionalCell::new(status_buffer),
             // tx_header: OptionalCell::new(tx_header),
             // tx_frame_info: Cell::new((0, 0)),
@@ -79,8 +85,42 @@ impl<'a> VirtIOInput<'a> {
         //     return;
         // }
 
-        // Place the event buffers into the device's VirtQueue
-        if let Some(event_buffer) = self.event_buffer.take() {
+        // // Place the event buffers into the device's VirtQueue
+        // if let Some(event_buffer1) = self.event_buffer1.take() {
+        //     if let Some(event_buffer2) = self.event_buffer2.take() {
+        //         if let Some(event_buffer3) = self.event_buffer3.take() {
+        //             let event_buffer1_len = event_buffer1.len();
+        //             let event_buffer2_len = event_buffer2.len();
+        //             let event_buffer3_len = event_buffer3.len();
+
+        //             let mut buffer_chain = [
+        //                 Some(VirtqueueBuffer {
+        //                     buf: event_buffer1,
+        //                     len: event_buffer1_len,
+        //                     device_writeable: true,
+        //                 }),
+        //                 Some(VirtqueueBuffer {
+        //                     buf: event_buffer2,
+        //                     len: event_buffer2_len,
+        //                     device_writeable: true,
+        //                 }),
+        //                 Some(VirtqueueBuffer {
+        //                     buf: event_buffer3,
+        //                     len: event_buffer3_len,
+        //                     device_writeable: true,
+        //                 }),
+        //             ];
+
+        //             self.eventq.provide_buffer_chain(&mut buffer_chain).unwrap();
+
+        //             kernel::debug!("reinsert ");
+
+        //             // a.unwrap();
+        //         }
+        //     }
+        // }
+
+        if let Some(event_buffer) = self.event_buffer1.take() {
             let event_buffer_len = event_buffer.len();
 
             let mut buffer_chain = [Some(VirtqueueBuffer {
@@ -91,9 +131,35 @@ impl<'a> VirtIOInput<'a> {
 
             self.eventq.provide_buffer_chain(&mut buffer_chain).unwrap();
 
-            kernel::debug!("reinsert ");
+            kernel::debug!("reinsert1 ");
+        }
 
-            // a.unwrap();
+        if let Some(event_buffer) = self.event_buffer2.take() {
+            let event_buffer_len = event_buffer.len();
+
+            let mut buffer_chain = [Some(VirtqueueBuffer {
+                buf: event_buffer,
+                len: event_buffer_len,
+                device_writeable: true,
+            })];
+
+            self.eventq.provide_buffer_chain(&mut buffer_chain).unwrap();
+
+            kernel::debug!("reinsert1 ");
+        }
+
+        if let Some(event_buffer) = self.event_buffer3.take() {
+            let event_buffer_len = event_buffer.len();
+
+            let mut buffer_chain = [Some(VirtqueueBuffer {
+                buf: event_buffer,
+                len: event_buffer_len,
+                device_writeable: true,
+            })];
+
+            self.eventq.provide_buffer_chain(&mut buffer_chain).unwrap();
+
+            kernel::debug!("reinsert1 ");
         }
 
         // if let Some(status_buffer) = self.status_buffer.take() {
@@ -157,7 +223,7 @@ impl SplitVirtqueueClient<'static> for VirtIOInput<'_> {
             //         .map(|client| client.received_frame(&rx_buffer[..(bytes_used - 12)], None));
             // }
 
-            self.event_buffer.replace(event_buffer);
+            self.event_buffer1.replace(event_buffer);
 
             // Re-run enable RX to provide the RX buffer chain back to the
             // device (if reception is still enabled):

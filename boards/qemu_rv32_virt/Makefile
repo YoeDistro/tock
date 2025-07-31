@@ -65,6 +65,7 @@ QEMU_BASE_CMDLINE := \
   $(QEMU_CMD) \
     -machine virt \
     -semihosting \
+    -monitor telnet:127.0.0.1:55554,server,nowait \
     -global driver=riscv-cpu,property=smepmp,value=true \
     -global virtio-mmio.force-legacy=false \
     -device virtio-rng-device \

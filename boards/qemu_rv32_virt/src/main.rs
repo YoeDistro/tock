@@ -508,12 +508,12 @@ unsafe fn start() -> (
     // kernel::debug!("creating event q");
 
     // Event Virtqueue
-    let event_descriptors = static_init!(VirtqueueDescriptors<1>, VirtqueueDescriptors::default(),);
+    let event_descriptors = static_init!(VirtqueueDescriptors<3>, VirtqueueDescriptors::default(),);
     let event_available_ring =
-        static_init!(VirtqueueAvailableRing<1>, VirtqueueAvailableRing::default(),);
-    let event_used_ring = static_init!(VirtqueueUsedRing<1>, VirtqueueUsedRing::default(),);
+        static_init!(VirtqueueAvailableRing<3>, VirtqueueAvailableRing::default(),);
+    let event_used_ring = static_init!(VirtqueueUsedRing<3>, VirtqueueUsedRing::default(),);
     let event_queue = static_init!(
-        SplitVirtqueue<1>,
+        SplitVirtqueue<3>,
         SplitVirtqueue::new(event_descriptors, event_available_ring, event_used_ring),
     );
     event_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
@@ -536,8 +536,10 @@ unsafe fn start() -> (
 
     // Incoming and outgoing packets are prefixed by a 12-byte
     // VirtIO specific header
-    let event_buf = static_init!([u8; 64], [0; 64]);
-    let status_buf = static_init!([u8; 64], [0; 64]);
+    let event_buf1 = static_init!([u8; 8], [0; 8]);
+    let event_buf2 = static_init!([u8; 8], [0; 8]);
+    let event_buf3 = static_init!([u8; 8], [0; 8]);
+    let status_buf = static_init!([u8; 128], [0; 128]);
     // let rx_header_buf = static_init!([u8; 12], [0; 12]);
 
     // Currently, provide a single receive buffer to write
@@ -547,7 +549,14 @@ unsafe fn start() -> (
     // Instantiate the VirtIONet (NetworkCard) driver and set the queues
     let virtio_input = static_init!(
         VirtIOInput<'static>,
-        VirtIOInput::new(event_queue, status_queue, event_buf, status_buf),
+        VirtIOInput::new(
+            event_queue,
+            status_queue,
+            event_buf1,
+            event_buf2,
+            event_buf3,
+            status_buf
+        ),
     );
     event_queue.set_client(virtio_input);
     status_queue.set_client(virtio_input);
@@ -703,7 +712,7 @@ unsafe fn start() -> (
         debug!("- VirtIO Input device not found, disabling Input");
     }
 
-    kernel::debug!("insert input queues");
+    kernel::debug!("insert input queues - yes");
     virtio_input.reinsert_virtqueue_receive_buffer();
 
     debug!("Entering main loop.");
@@ -728,6 +737,8 @@ unsafe fn start() -> (
         debug!("Error loading processes!");
         debug!("{:?}", err);
     });
+
+    // event_queue.notifyyy();
 
     (board_kernel, platform, chip)
 }
