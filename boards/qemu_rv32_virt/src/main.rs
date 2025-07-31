@@ -305,7 +305,7 @@ unsafe fn start() -> (
     // Collect supported VirtIO peripheral indicies and initialize them if they
     // are found. If there are two instances of a supported peripheral, the one
     // on a higher-indexed VirtIO transport is used.
-    let (mut virtio_net_idx, mut virtio_rng_idx) = (None, None);
+    let (mut virtio_net_idx, mut virtio_rng_idx, mut virtio_input_idx) = (None, None, None);
     for (i, virtio_device) in peripherals.virtio_mmio.iter().enumerate() {
         use qemu_rv32_virt_chip::virtio::devices::VirtIODeviceType;
         match virtio_device.query() {
@@ -314,6 +314,9 @@ unsafe fn start() -> (
             }
             Some(VirtIODeviceType::EntropySource) => {
                 virtio_rng_idx = Some(i);
+            }
+            Some(VirtIODeviceType::InputDevice) => {
+                virtio_input_idx = Some(i);
             }
             _ => (),
         }
@@ -477,6 +480,122 @@ unsafe fn start() -> (
         None
     };
 
+    // let virtio_input_device: Option<
+    //     &'static capsules_extra::ethernet_tap::EthernetTapDriver<
+    //         'static,
+    //         qemu_rv32_virt_chip::virtio::devices::virtio_net::VirtIONet<'static>,
+    //     >,
+    // > =
+
+    // let virtio_input = if let Some(input_idx) = virtio_input_idx {
+
+    let input_idx = virtio_input_idx.unwrap();
+
+    // use capsules_extra::ethernet_tap::EthernetTapDriver;
+    // use kernel::hil::ethernet::EthernetAdapterDatapath;
+    use qemu_rv32_virt_chip::virtio::devices::virtio_input::VirtIOInput;
+    use qemu_rv32_virt_chip::virtio::queues::split_queue::{
+        SplitVirtqueue, VirtqueueAvailableRing, VirtqueueDescriptors, VirtqueueUsedRing,
+    };
+    use qemu_rv32_virt_chip::virtio::queues::Virtqueue;
+    use qemu_rv32_virt_chip::virtio::transports::VirtIOTransport;
+
+    // A VirtIO NetworkCard requires 2 Virtqueues:
+    // - a TX Virtqueue with buffers for outgoing packets
+    // - a RX Virtqueue where incoming packet buffers are
+    //   placed and filled by the device
+
+    // kernel::debug!("creating event q");
+
+    // Event Virtqueue
+    let event_descriptors = static_init!(VirtqueueDescriptors<1>, VirtqueueDescriptors::default(),);
+    let event_available_ring =
+        static_init!(VirtqueueAvailableRing<1>, VirtqueueAvailableRing::default(),);
+    let event_used_ring = static_init!(VirtqueueUsedRing<1>, VirtqueueUsedRing::default(),);
+    let event_queue = static_init!(
+        SplitVirtqueue<1>,
+        SplitVirtqueue::new(event_descriptors, event_available_ring, event_used_ring),
+    );
+    event_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
+
+    // kernel::debug!("creating status q");
+
+    // Status Virtqueue
+    let status_descriptors =
+        static_init!(VirtqueueDescriptors<1>, VirtqueueDescriptors::default(),);
+    let status_available_ring =
+        static_init!(VirtqueueAvailableRing<1>, VirtqueueAvailableRing::default(),);
+    let status_used_ring = static_init!(VirtqueueUsedRing<1>, VirtqueueUsedRing::default(),);
+    let status_queue = static_init!(
+        SplitVirtqueue<1>,
+        SplitVirtqueue::new(status_descriptors, status_available_ring, status_used_ring),
+    );
+    status_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
+
+    // kernel::debug!("creating buffers");
+
+    // Incoming and outgoing packets are prefixed by a 12-byte
+    // VirtIO specific header
+    let event_buf = static_init!([u8; 64], [0; 64]);
+    let status_buf = static_init!([u8; 64], [0; 64]);
+    // let rx_header_buf = static_init!([u8; 12], [0; 12]);
+
+    // Currently, provide a single receive buffer to write
+    // incoming packets into
+    // let rx_buffer = static_init!([u8; 1526], [0; 1526]);
+
+    // Instantiate the VirtIONet (NetworkCard) driver and set the queues
+    let virtio_input = static_init!(
+        VirtIOInput<'static>,
+        VirtIOInput::new(event_queue, status_queue, event_buf, status_buf),
+    );
+    event_queue.set_client(virtio_input);
+    status_queue.set_client(virtio_input);
+
+    // kernel::debug!("registering");
+
+    // Register the queues and driver with the transport, so
+    // interrupts are routed properly
+    let mmio_queues = static_init!([&'static dyn Virtqueue; 2], [event_queue, status_queue]);
+    peripherals.virtio_mmio[input_idx]
+        .initialize(virtio_input, mmio_queues)
+        .unwrap();
+
+    // kernel::debug!("starting input");
+
+    // // Instantiate the userspace tap network driver over this device:
+    // let virtio_ethernet_tap_tx_buffer = static_init!(
+    //     [u8; capsules_extra::ethernet_tap::MAX_MTU],
+    //     [0; capsules_extra::ethernet_tap::MAX_MTU],
+    // );
+    // let virtio_ethernet_tap = static_init!(
+    //     EthernetTapDriver<'static, VirtIONet<'static>>,
+    //     EthernetTapDriver::new(
+    //         virtio_net,
+    //         board_kernel.create_grant(
+    //             capsules_extra::ethernet_tap::DRIVER_NUM,
+    //             &memory_allocation_cap
+    //         ),
+    //         virtio_ethernet_tap_tx_buffer,
+    //     ),
+    // );
+    // virtio_net.set_client(virtio_ethernet_tap);
+
+    // // This enables reception on the underlying device:
+    // virtio_ethernet_tap.initialize();
+
+    //     Some(virtio_input)
+
+    //     // Some(virtio_ethernet_tap as &'static EthernetTapDriver<'static, VirtIONet<'static>>)
+    // } else {
+    //     None
+    // };
+
+    // else {
+    //     // No VirtIO NetworkCard discovered
+    //     None
+    // };
+
     // ---------- INITIALIZE CHIP, ENABLE INTERRUPTS ---------
 
     let chip = static_init!(
@@ -578,6 +697,14 @@ unsafe fn start() -> (
     } else {
         debug!("- VirtIO NetworkCard device not found, disabling EthernetTapDriver");
     }
+    if virtio_input_idx.is_some() {
+        debug!("- Found VirtIO Input device, enabling Input {}", input_idx);
+    } else {
+        debug!("- VirtIO Input device not found, disabling Input");
+    }
+
+    kernel::debug!("insert input queues");
+    virtio_input.reinsert_virtqueue_receive_buffer();
 
     debug!("Entering main loop.");
 

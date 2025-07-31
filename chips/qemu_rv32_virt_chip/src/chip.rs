@@ -64,14 +64,38 @@ impl InterruptService for QemuRv32VirtDefaultPeripherals<'_> {
     unsafe fn service_interrupt(&self, interrupt: u32) -> bool {
         match interrupt {
             interrupts::UART0 => self.uart0.handle_interrupt(),
-            interrupts::VIRTIO_MMIO_0 => self.virtio_mmio[0].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_1 => self.virtio_mmio[1].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_2 => self.virtio_mmio[2].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_3 => self.virtio_mmio[3].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_4 => self.virtio_mmio[4].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_5 => self.virtio_mmio[5].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_6 => self.virtio_mmio[6].handle_interrupt(),
-            interrupts::VIRTIO_MMIO_7 => self.virtio_mmio[7].handle_interrupt(),
+            interrupts::VIRTIO_MMIO_0 => {
+                kernel::debug!("MMIO0");
+                self.virtio_mmio[0].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_1 => {
+                kernel::debug!("MMIO1");
+                self.virtio_mmio[1].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_2 => {
+                kernel::debug!("MMIO2");
+                self.virtio_mmio[2].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_3 => {
+                kernel::debug!("MMIO3");
+                self.virtio_mmio[3].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_4 => {
+                kernel::debug!("MMIO4");
+                self.virtio_mmio[4].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_5 => {
+                kernel::debug!("MMIO5");
+                self.virtio_mmio[5].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_6 => {
+                kernel::debug!("MMIO6");
+                self.virtio_mmio[6].handle_interrupt()
+            }
+            interrupts::VIRTIO_MMIO_7 => {
+                kernel::debug!("MMIO7");
+                self.virtio_mmio[7].handle_interrupt()
+            }
             _ => return false,
         }
         true

@@ -157,6 +157,7 @@ impl VirtIOMMIODevice {
 
         if isr.is_set(InterruptStatus::ConfigChange) {
             // TODO: this should probably be handled?
+            kernel::debug!("config change");
         }
     }
 

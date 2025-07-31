@@ -371,7 +371,7 @@ impl AvailableRingHelper {
 /// However, clients may not wish to expose the full slice length to the
 /// device. They cannot simply subslice the slice, as that would mean that
 /// clients loose access to the "sliced off" portion of the slice. Instead,
-/// clients pass a seperate `length` parameter when inserting a buffer into a
+/// clients pass a separate `length` parameter when inserting a buffer into a
 /// virtqueue, by means of the [`VirtqueueBuffer`] struct. This information is
 /// then written to the VirtIO descriptor.
 ///
@@ -417,8 +417,8 @@ impl<'b> SharedDescriptorBuffer<'b> {
 /// can be asked to not write to the shared buffer by setting `device_writeable`
 /// to `false`.
 ///
-/// The [`SplitVirtqueue`] does not actually enfore that a VirtIO device adheres
-/// to the `device_writeable` flag, although compliant devices should.
+/// The [`SplitVirtqueue`] does not actually enforce that a VirtIO device
+/// adheres to the `device_writeable` flag, although compliant devices should.
 pub struct VirtqueueBuffer<'b> {
     pub buf: &'b mut [u8],
     pub len: usize,
@@ -443,7 +443,7 @@ pub struct VirtqueueBuffer<'b> {
 /// Each of these areas must be located physically-contiguous in guest-memory
 /// and have different alignment constraints.
 ///
-/// This is in constrast to _packed Virtqueues_, which use memory regions that
+/// This is in contrast to _packed Virtqueues_, which use memory regions that
 /// are read and written by both the VirtIO device (host) and VirtIO driver
 /// (guest).
 pub struct SplitVirtqueue<'a, 'b, const MAX_QUEUE_SIZE: usize> {
@@ -453,6 +453,7 @@ pub struct SplitVirtqueue<'a, 'b, const MAX_QUEUE_SIZE: usize> {
 
     available_ring_state: AvailableRingHelper,
     last_used_idx: Cell<u16>,
+    first: Cell<bool>,
 
     transport: OptionalCell<&'a dyn VirtIOTransport>,
 
@@ -483,6 +484,7 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
 
             available_ring_state: AvailableRingHelper::new(MAX_QUEUE_SIZE),
             last_used_idx: Cell::new(0),
+            first: Cell::new(true),
 
             transport: OptionalCell::empty(),
 
@@ -541,6 +543,11 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
     /// Get the number of (unprocessed) descriptor chains in the Virtqueue's
     /// used ring.
     pub fn used_descriptor_chains_count(&self) -> usize {
+        kernel::debug!(
+            "used_descriptor_chains_count {} {}",
+            self.used_ring.idx.get(),
+            self.last_used_idx.get()
+        );
         let pending_chains = self
             .used_ring
             .idx
@@ -551,7 +558,13 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         // the used ring increased too fast and has overwritten data
         assert!(pending_chains as usize <= self.max_elements.get());
 
-        pending_chains as usize
+        if self.first.get() == true {
+            self.first.set(false);
+            // 1
+            pending_chains as usize
+        } else {
+            pending_chains as usize
+        }
     }
 
     /// Remove an element from the Virtqueue's used ring.q
@@ -569,6 +582,8 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         assert!(self.initialized.get());
 
         let pending_chains = self.used_descriptor_chains_count();
+
+        kernel::debug!("pending chains {}", pending_chains);
 
         if pending_chains > 0 {
             let last_used_idx = self.last_used_idx.get();
@@ -824,8 +839,12 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
     ) -> Option<([Option<VirtqueueBuffer<'b>>; MAX_QUEUE_SIZE], usize)> {
         assert!(self.initialized.get());
 
-        self.remove_used_chain()
-            .map(|(descriptor_idx, bytes_used)| {
+        self.remove_used_chain().map_or_else(
+            || {
+                kernel::debug!("no chain");
+                None
+            },
+            |(descriptor_idx, bytes_used)| {
                 // Get the descriptor chain
                 let chain = self.remove_descriptor_chain(descriptor_idx);
 
@@ -835,8 +854,9 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
                 // overflow of the used ring
                 self.available_ring_state.pop();
 
-                (chain, bytes_used)
-            })
+                Some((chain, bytes_used))
+            },
+        )
     }
 
     /// Disable callback delivery for the
@@ -853,6 +873,7 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
     /// Callback delivery is enabled by default. If this is not desired, call
     /// this method prior to registering a client.
     pub fn disable_used_callbacks(&self) {
+        kernel::debug!("disable used callbacks");
         self.used_callbacks_enabled.set(false);
     }
 }
@@ -865,9 +886,14 @@ impl<const MAX_QUEUE_SIZE: usize> Virtqueue for SplitVirtqueue<'_, '_, MAX_QUEUE
         // Try to extract all pending used buffers and return them to
         // the clients via callbacks
 
+        kernel::debug!("used interrupt");
+
         while self.used_callbacks_enabled.get() {
+            kernel::debug!("used interrupt2");
             if let Some((mut chain, bytes_used)) = self.pop_used_buffer_chain() {
+                kernel::debug!("used interrupt3");
                 self.client.map(move |client| {
+                    kernel::debug!("used interrupt4");
                     client.buffer_chain_ready(self.queue_number.get(), chain.as_mut(), bytes_used)
                 });
             } else {
