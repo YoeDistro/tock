@@ -487,125 +487,92 @@ unsafe fn start() -> (
     //     >,
     // > =
 
-    // let virtio_input = if let Some(input_idx) = virtio_input_idx {
+    let button_keyboard: Option<&'static capsules_extra::button_keyboard::ButtonKeyboard<'static>> =
+        if let Some(input_idx) = virtio_input_idx {
+            use kernel::hil::keyboard::Keyboard;
+            use qemu_rv32_virt_chip::virtio::devices::virtio_input::VirtIOInput;
+            use qemu_rv32_virt_chip::virtio::queues::split_queue::{
+                SplitVirtqueue, VirtqueueAvailableRing, VirtqueueDescriptors, VirtqueueUsedRing,
+            };
+            use qemu_rv32_virt_chip::virtio::queues::Virtqueue;
+            use qemu_rv32_virt_chip::virtio::transports::VirtIOTransport;
 
-    let input_idx = virtio_input_idx.unwrap();
+            // Event Virtqueue
+            let event_descriptors =
+                static_init!(VirtqueueDescriptors<3>, VirtqueueDescriptors::default(),);
+            let event_available_ring =
+                static_init!(VirtqueueAvailableRing<3>, VirtqueueAvailableRing::default(),);
+            let event_used_ring = static_init!(VirtqueueUsedRing<3>, VirtqueueUsedRing::default(),);
+            let event_queue = static_init!(
+                SplitVirtqueue<3>,
+                SplitVirtqueue::new(event_descriptors, event_available_ring, event_used_ring),
+            );
+            event_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
 
-    // use capsules_extra::ethernet_tap::EthernetTapDriver;
-    // use kernel::hil::ethernet::EthernetAdapterDatapath;
-    use qemu_rv32_virt_chip::virtio::devices::virtio_input::VirtIOInput;
-    use qemu_rv32_virt_chip::virtio::queues::split_queue::{
-        SplitVirtqueue, VirtqueueAvailableRing, VirtqueueDescriptors, VirtqueueUsedRing,
-    };
-    use qemu_rv32_virt_chip::virtio::queues::Virtqueue;
-    use qemu_rv32_virt_chip::virtio::transports::VirtIOTransport;
+            // Status Virtqueue
+            let status_descriptors =
+                static_init!(VirtqueueDescriptors<1>, VirtqueueDescriptors::default(),);
+            let status_available_ring =
+                static_init!(VirtqueueAvailableRing<1>, VirtqueueAvailableRing::default(),);
+            let status_used_ring =
+                static_init!(VirtqueueUsedRing<1>, VirtqueueUsedRing::default(),);
+            let status_queue = static_init!(
+                SplitVirtqueue<1>,
+                SplitVirtqueue::new(status_descriptors, status_available_ring, status_used_ring),
+            );
+            status_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
 
-    // A VirtIO NetworkCard requires 2 Virtqueues:
-    // - a TX Virtqueue with buffers for outgoing packets
-    // - a RX Virtqueue where incoming packet buffers are
-    //   placed and filled by the device
+            // Buffers to store events from the keyboard.
+            let event_buf1 = static_init!([u8; 8], [0; 8]);
+            let event_buf2 = static_init!([u8; 8], [0; 8]);
+            let event_buf3 = static_init!([u8; 8], [0; 8]);
+            let status_buf = static_init!([u8; 128], [0; 128]);
 
-    // kernel::debug!("creating event q");
+            // Instantiate the input driver
+            let virtio_input = static_init!(
+                VirtIOInput<'static>,
+                VirtIOInput::new(event_queue, status_queue, status_buf),
+            );
+            event_queue.set_client(virtio_input);
+            status_queue.set_client(virtio_input);
 
-    // Event Virtqueue
-    let event_descriptors = static_init!(VirtqueueDescriptors<3>, VirtqueueDescriptors::default(),);
-    let event_available_ring =
-        static_init!(VirtqueueAvailableRing<3>, VirtqueueAvailableRing::default(),);
-    let event_used_ring = static_init!(VirtqueueUsedRing<3>, VirtqueueUsedRing::default(),);
-    let event_queue = static_init!(
-        SplitVirtqueue<3>,
-        SplitVirtqueue::new(event_descriptors, event_available_ring, event_used_ring),
-    );
-    event_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
+            // Register the queues and driver with the transport, so
+            // interrupts are routed properly
+            let mmio_queues =
+                static_init!([&'static dyn Virtqueue; 2], [event_queue, status_queue]);
+            peripherals.virtio_mmio[input_idx]
+                .initialize(virtio_input, mmio_queues)
+                .unwrap();
 
-    // kernel::debug!("creating status q");
+            virtio_input.provide_buffers(event_buf1, event_buf2, event_buf3);
 
-    // Status Virtqueue
-    let status_descriptors =
-        static_init!(VirtqueueDescriptors<1>, VirtqueueDescriptors::default(),);
-    let status_available_ring =
-        static_init!(VirtqueueAvailableRing<1>, VirtqueueAvailableRing::default(),);
-    let status_used_ring = static_init!(VirtqueueUsedRing<1>, VirtqueueUsedRing::default(),);
-    let status_queue = static_init!(
-        SplitVirtqueue<1>,
-        SplitVirtqueue::new(status_descriptors, status_available_ring, status_used_ring),
-    );
-    status_queue.set_transport(&peripherals.virtio_mmio[input_idx]);
+            let key_mappings = static_init!(
+                [u16; 4],
+                [
+                    103, // UP
+                    14,  // BACKSPACE
+                    108, // DOWN
+                    28,  // ENTER
+                ]
+            );
 
-    // kernel::debug!("creating buffers");
+            let button_keyboard = static_init!(
+                capsules_extra::button_keyboard::ButtonKeyboard<'static>,
+                capsules_extra::button_keyboard::ButtonKeyboard::new(
+                    key_mappings,
+                    board_kernel.create_grant(
+                        capsules_extra::button_keyboard::DRIVER_NUM,
+                        &memory_allocation_cap
+                    )
+                )
+            );
+            virtio_input.set_client(button_keyboard);
 
-    // Incoming and outgoing packets are prefixed by a 12-byte
-    // VirtIO specific header
-    let event_buf1 = static_init!([u8; 8], [0; 8]);
-    let event_buf2 = static_init!([u8; 8], [0; 8]);
-    let event_buf3 = static_init!([u8; 8], [0; 8]);
-    let status_buf = static_init!([u8; 128], [0; 128]);
-    // let rx_header_buf = static_init!([u8; 12], [0; 12]);
-
-    // Currently, provide a single receive buffer to write
-    // incoming packets into
-    // let rx_buffer = static_init!([u8; 1526], [0; 1526]);
-
-    // Instantiate the VirtIONet (NetworkCard) driver and set the queues
-    let virtio_input = static_init!(
-        VirtIOInput<'static>,
-        VirtIOInput::new(
-            event_queue,
-            status_queue,
-            // event_buf1,
-            // event_buf2,
-            // event_buf3,
-            status_buf
-        ),
-    );
-    event_queue.set_client(virtio_input);
-    status_queue.set_client(virtio_input);
-
-    // kernel::debug!("registering");
-
-    // Register the queues and driver with the transport, so
-    // interrupts are routed properly
-    let mmio_queues = static_init!([&'static dyn Virtqueue; 2], [event_queue, status_queue]);
-    peripherals.virtio_mmio[input_idx]
-        .initialize(virtio_input, mmio_queues)
-        .unwrap();
-
-    virtio_input.provide_buffers(event_buf1, event_buf2, event_buf3);
-
-    // kernel::debug!("starting input");
-
-    // // Instantiate the userspace tap network driver over this device:
-    // let virtio_ethernet_tap_tx_buffer = static_init!(
-    //     [u8; capsules_extra::ethernet_tap::MAX_MTU],
-    //     [0; capsules_extra::ethernet_tap::MAX_MTU],
-    // );
-    // let virtio_ethernet_tap = static_init!(
-    //     EthernetTapDriver<'static, VirtIONet<'static>>,
-    //     EthernetTapDriver::new(
-    //         virtio_net,
-    //         board_kernel.create_grant(
-    //             capsules_extra::ethernet_tap::DRIVER_NUM,
-    //             &memory_allocation_cap
-    //         ),
-    //         virtio_ethernet_tap_tx_buffer,
-    //     ),
-    // );
-    // virtio_net.set_client(virtio_ethernet_tap);
-
-    // // This enables reception on the underlying device:
-    // virtio_ethernet_tap.initialize();
-
-    //     Some(virtio_input)
-
-    //     // Some(virtio_ethernet_tap as &'static EthernetTapDriver<'static, VirtIONet<'static>>)
-    // } else {
-    //     None
-    // };
-
-    // else {
-    //     // No VirtIO NetworkCard discovered
-    //     None
-    // };
+            Some(button_keyboard)
+        } else {
+            // No Input device
+            None
+        };
 
     // ---------- INITIALIZE CHIP, ENABLE INTERRUPTS ---------
 
@@ -708,8 +675,8 @@ unsafe fn start() -> (
     } else {
         debug!("- VirtIO NetworkCard device not found, disabling EthernetTapDriver");
     }
-    if virtio_input_idx.is_some() {
-        debug!("- Found VirtIO Input device, enabling Input {}", input_idx);
+    if button_keyboard.is_some() {
+        debug!("- Found VirtIO Input device, enabling Input");
     } else {
         debug!("- VirtIO Input device not found, disabling Input");
     }
