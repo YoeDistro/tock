@@ -552,9 +552,9 @@ unsafe fn start() -> (
         VirtIOInput::new(
             event_queue,
             status_queue,
-            event_buf1,
-            event_buf2,
-            event_buf3,
+            // event_buf1,
+            // event_buf2,
+            // event_buf3,
             status_buf
         ),
     );
@@ -569,6 +569,8 @@ unsafe fn start() -> (
     peripherals.virtio_mmio[input_idx]
         .initialize(virtio_input, mmio_queues)
         .unwrap();
+
+    virtio_input.provide_buffers(event_buf1, event_buf2, event_buf3);
 
     // kernel::debug!("starting input");
 
@@ -711,9 +713,6 @@ unsafe fn start() -> (
     } else {
         debug!("- VirtIO Input device not found, disabling Input");
     }
-
-    kernel::debug!("insert input queues - yes");
-    virtio_input.reinsert_virtqueue_receive_buffer();
 
     debug!("Entering main loop.");
 
