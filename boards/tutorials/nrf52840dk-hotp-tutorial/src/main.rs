@@ -24,6 +24,16 @@ const FAULT_RESPONSE: capsules_system::process_policies::PanicFaultPolicy =
 // Screen
 type ScreenDriver = components::screen::ScreenComponentType;
 
+#[cfg(feature = "screen_ssd1306")]
+type ScreenHw = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
+#[cfg(feature = "screen_sh1106")]
+type ScreenHw = components::sh1106::Sh1106ComponentType<nrf52840::i2c::TWI<'static>>;
+
+type ScreenSplitUser = components::screen::ScreenSplitUserComponentType<ScreenHw>;
+
+type ScreenOnLed = components::screen_on::ScreenOnLedComponentType<ScreenSplitUser, 4, 128, 24>;
+type ScreenOnLedSingle = capsules_extra::screen_on_led::ScreenOnLedSingle<'static, ScreenOnLed>;
+
 // USB Keyboard HID - for nRF52840dk
 type UsbHw = nrf52840::usbd::Usbd<'static>; // For any nRF52840 board.
 type KeyboardHidDriver = components::keyboard_hid::KeyboardHidComponentType<UsbHw>;
@@ -35,6 +45,7 @@ type HmacSha256Software = components::hmac::HmacSha256SoftwareComponentType<
 type HmacDriver = components::hmac::HmacComponentType<HmacSha256Software, 32>;
 
 struct Platform {
+    led: &'static capsules_core::led::LedDriver<'static, ScreenOnLedSingle, 4>,
     keyboard_hid_driver: &'static KeyboardHidDriver,
     hmac: &'static HmacDriver,
     screen: &'static ScreenDriver,
@@ -49,6 +60,7 @@ impl SyscallDriverLookup for Platform {
         F: FnOnce(Option<&dyn kernel::syscall::SyscallDriver>) -> R,
     {
         match driver_num {
+            capsules_core::led::DRIVER_NUM => f(Some(self.led)),
             capsules_extra::hmac::DRIVER_NUM => f(Some(self.hmac)),
             KEYBOARD_HID_DRIVER_NUM => f(Some(self.keyboard_hid_driver)),
             capsules_extra::screen::DRIVER_NUM => f(Some(self.screen)),
@@ -150,15 +162,39 @@ pub unsafe fn main() {
     let ssd1306_sh1106 = components::sh1106::Sh1106Component::new(ssd1306_sh1106_i2c, true)
         .finalize(components::sh1106_component_static!(nrf52840::i2c::TWI));
 
+    let screen_split = components::screen::ScreenSplitMuxComponent::new(ssd1306_sh1106)
+        .finalize(components::screen_split_mux_component_static!(ScreenHw));
+
+    let screen_split_userspace =
+        components::screen::ScreenSplitUserComponent::new(screen_split, 0, 0, 128, 32)
+            .finalize(components::screen_split_user_component_static!(ScreenHw));
+
+    let screen_split_kernel =
+        components::screen::ScreenSplitUserComponent::new(screen_split, 0, 40, 128, 24)
+            .finalize(components::screen_split_user_component_static!(ScreenHw));
+
     let screen = components::screen::ScreenComponent::new(
         board_kernel,
         capsules_extra::screen::DRIVER_NUM,
-        ssd1306_sh1106,
+        screen_split_userspace,
         None,
     )
     .finalize(components::screen_component_static!(1032));
 
+    let screen_on_leds =
+        components::screen_on::ScreenOnLedComponent::new(screen_split_kernel).finalize(
+            components::screen_on_led_component_static!(ScreenSplitUser, 4, 128, 24),
+        );
+
     ssd1306_sh1106.init_screen();
+
+    let led = components::led::LedsComponent::new().finalize(components::led_component_static!(
+        ScreenOnLedSingle,
+        capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 0),
+        capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 1),
+        capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 2),
+        capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 3),
+    ));
 
     //--------------------------------------------------------------------------
     // KEYBOARD
@@ -196,6 +232,7 @@ pub unsafe fn main() {
 
     let platform = Platform {
         base: base_platform,
+        led,
         keyboard_hid_driver,
         hmac,
         screen,
