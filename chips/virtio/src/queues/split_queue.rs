@@ -543,11 +543,6 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
     /// Get the number of (unprocessed) descriptor chains in the Virtqueue's
     /// used ring.
     pub fn used_descriptor_chains_count(&self) -> usize {
-        kernel::debug!(
-            "used_descriptor_chains_count {} {}",
-            self.used_ring.idx.get(),
-            self.last_used_idx.get()
-        );
         let pending_chains = self
             .used_ring
             .idx
@@ -582,8 +577,6 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         assert!(self.initialized.get());
 
         let pending_chains = self.used_descriptor_chains_count();
-
-        kernel::debug!("pending chains {}", pending_chains);
 
         if pending_chains > 0 {
             let last_used_idx = self.last_used_idx.get();
@@ -850,10 +843,7 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         assert!(self.initialized.get());
 
         self.remove_used_chain().map_or_else(
-            || {
-                kernel::debug!("no chain");
-                None
-            },
+            || None,
             |(descriptor_idx, bytes_used)| {
                 // Get the descriptor chain
                 let chain = self.remove_descriptor_chain(descriptor_idx);
@@ -883,7 +873,6 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
     /// Callback delivery is enabled by default. If this is not desired, call
     /// this method prior to registering a client.
     pub fn disable_used_callbacks(&self) {
-        kernel::debug!("disable used callbacks");
         self.used_callbacks_enabled.set(false);
     }
 }
@@ -896,14 +885,9 @@ impl<const MAX_QUEUE_SIZE: usize> Virtqueue for SplitVirtqueue<'_, '_, MAX_QUEUE
         // Try to extract all pending used buffers and return them to
         // the clients via callbacks
 
-        kernel::debug!("used interrupt");
-
         while self.used_callbacks_enabled.get() {
-            kernel::debug!("used interrupt2");
             if let Some((mut chain, bytes_used)) = self.pop_used_buffer_chain() {
-                kernel::debug!("used interrupt3");
                 self.client.map(move |client| {
-                    kernel::debug!("used interrupt4");
                     client.buffer_chain_ready(self.queue_number.get(), chain.as_mut(), bytes_used)
                 });
             } else {
