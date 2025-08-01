@@ -150,10 +150,27 @@ pub unsafe fn main() {
     let ssd1306_sh1106 = components::sh1106::Sh1106Component::new(ssd1306_sh1106_i2c, true)
         .finalize(components::sh1106_component_static!(nrf52840::i2c::TWI));
 
+    #[cfg(feature = "screen_ssd1306")]
+    type ScreenHw = components::ssd1306::Ssd1306ComponentType<nrf52840::i2c::TWI<'static>>;
+    #[cfg(feature = "screen_sh1106")]
+    type ScreenHw = components::sh1106::Sh1106ComponentType<nrf52840::i2c::TWI<'static>>;
+
+    let screen_split = static_init!(
+        capsules_extra::screen_split::ScreenSplit<'static, ScreenHw>,
+        capsules_extra::screen_split::ScreenSplit::new(ssd1306_sh1106),
+    );
+    kernel::hil::screen::Screen::set_client(ssd1306_sh1106, screen_split);
+
+    let screen_split_userspace = static_init!(
+        capsules_extra::screen_split::ScreenSplitSection<'static, ScreenHw>,
+        capsules_extra::screen_split::ScreenSplitSection::new(screen_split, 0, 0, 128, 32),
+    );
+    screen_split.set_userspace_split(screen_split_userspace);
+
     let screen = components::screen::ScreenComponent::new(
         board_kernel,
         capsules_extra::screen::DRIVER_NUM,
-        ssd1306_sh1106,
+        screen_split_userspace,
         None,
     )
     .finalize(components::screen_component_static!(1032));
