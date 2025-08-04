@@ -419,6 +419,7 @@ impl<'b> SharedDescriptorBuffer<'b> {
 ///
 /// The [`SplitVirtqueue`] does not actually enfore that a VirtIO device adheres
 /// to the `device_writeable` flag, although compliant devices should.
+#[derive(Debug)]
 pub struct VirtqueueBuffer<'b> {
     pub buf: &'b mut [u8],
     pub len: usize,
@@ -554,7 +555,7 @@ impl<'a, 'b, const MAX_QUEUE_SIZE: usize> SplitVirtqueue<'a, 'b, MAX_QUEUE_SIZE>
         pending_chains as usize
     }
 
-    /// Remove an element from the Virtqueue's used ring.q
+    /// Remove an element from the Virtqueue's used ring.
     ///
     /// If `self.last_used_idx.get() == self.used_ring.idx.get()` (e.g. we don't
     /// have an unprocessed used buffer chain) this will return
@@ -864,7 +865,6 @@ impl<const MAX_QUEUE_SIZE: usize> Virtqueue for SplitVirtqueue<'_, '_, MAX_QUEUE
         //
         // Try to extract all pending used buffers and return them to
         // the clients via callbacks
-
         while self.used_callbacks_enabled.get() {
             if let Some((mut chain, bytes_used)) = self.pop_used_buffer_chain() {
                 self.client.map(move |client| {
