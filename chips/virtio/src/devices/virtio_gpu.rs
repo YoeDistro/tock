@@ -1010,13 +1010,18 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         // Reset the flush area:
         self.current_flush_area.set(Rect::empty());
 
-        // If this was in response to a draw command, issue a callback:
+        // Issue the appropriate callback:
         match self.state.get() {
-            VirtIOGPUState::DrawResourceFlush(_mode) => {
+            VirtIOGPUState::DrawResourceFlush(DrawMode::Write) => {
                 self.client
                     .map(|c| c.write_complete(self.client_write_buffer.take().unwrap(), Ok(())));
             }
-            VirtIOGPUState::InitializingResourceFlush => (),
+            VirtIOGPUState::DrawResourceFlush(DrawMode::WriteToFrameBuffer) => {
+                self.client.map(|c| c.command_complete(Ok(())));
+            }
+            VirtIOGPUState::InitializingResourceFlush => {
+                self.client.map(|c| c.screen_is_ready());
+            }
             s => panic!(
                 "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
                 s
@@ -1241,88 +1246,95 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
 
     fn write(
         &self,
-        mut buffer: SubSliceMut<'static, u8>,
-        continue_write: bool,
+        mut _buffer: SubSliceMut<'static, u8>,
+        _continue_write: bool,
     ) -> Result<(), ErrorCode> {
-        // Make sure we're idle:
-        let VirtIOGPUState::Idle = self.state.get() else {
-            return Err(ErrorCode::BUSY);
-        };
+        // // Make sure we're idle:
+        // let VirtIOGPUState::Idle = self.state.get() else {
+        //     return Err(ErrorCode::BUSY);
+        // };
 
-        // Write the contents of `buffer` to the internal frame buffer, in the
-        // draw area set by `set_write_frame`.
-        //
-        // If `continue_write` is false, we must reset `x_off`, `y_off` and the
-        // `pixels_remaining` value. Otherwise we start at the stored offset.
-        let (draw_rect, (x_off, y_off), pixels_remaining) = if continue_write {
-            self.current_draw_area.get()
-        } else {
-            let (draw_rect, _, _) = self.current_draw_area.get();
+        // // Write the contents of `buffer` to the internal frame buffer, in the
+        // // draw area set by `set_write_frame`.
+        // //
+        // // If `continue_write` is false, we must reset `x_off`, `y_off` and the
+        // // `pixels_remaining` value. Otherwise we start at the stored offset.
+        // let (draw_rect, (x_off, y_off), pixels_remaining) = if continue_write {
+        //     self.current_draw_area.get()
+        // } else {
+        //     let (draw_rect, _, _) = self.current_draw_area.get();
 
-            // This multiplication must not overflow, as it hasn't overflowed
-            // when we performed it in `set_write_frame`:
-            (
-                draw_rect,
-                (0, 0),
-                (draw_rect.width as usize)
-                    .checked_mul(draw_rect.height as usize)
-                    .unwrap(),
-            )
-        };
+        //     // This multiplication must not overflow, as it hasn't overflowed
+        //     // when we performed it in `set_write_frame`:
+        //     (
+        //         draw_rect,
+        //         (0, 0),
+        //         (draw_rect.width as usize)
+        //             .checked_mul(draw_rect.height as usize)
+        //             .unwrap(),
+        //     )
+        // };
 
-        // Make sure the buffer has a length compatible with our pixel mode:
-        if buffer.len() % PIXEL_STRIDE != 0 {
-            // TODO: this error code is not yet supported in the HIL:
-            return Err(ErrorCode::INVAL);
-        }
-        let buffer_pixels = buffer.len() / PIXEL_STRIDE;
+        // // Make sure the buffer has a length compatible with our pixel mode:
+        // if buffer.len() % PIXEL_STRIDE != 0 {
+        //     // TODO: this error code is not yet supported in the HIL:
+        //     return Err(ErrorCode::INVAL);
+        // }
+        // let buffer_pixels = buffer.len() / PIXEL_STRIDE;
 
-        // Check whether this buffer will fit the remaining draw area:
-        if buffer_pixels > pixels_remaining {
-            return Err(ErrorCode::SIZE);
-        }
+        // // Check whether this buffer will fit the remaining draw area:
+        // if buffer_pixels > pixels_remaining {
+        //     return Err(ErrorCode::SIZE);
+        // }
 
-        // Okay, looks good, we can start drawing! Calculate the start offset
-        // into our framebuffer. This computation must never overflow, as we've
-        // checked that `self.width * self.height` fits into a `u32` in `new()`:
-        let fb_start_offset =
-            (x_off as usize).checked_mul(self.width as usize).unwrap() + (y_off as usize);
-        let fb_end_offset = fb_start_offset.checked_add(buffer.len()).unwrap();
+        // This following code is wrong, it needs to draw row-by-row instead.
+        todo!();
 
-        // The frame buffer must be accessible here. We never "take" it for
-        // longer than a single, synchronous method call:
-        self.frame_buffer
-            .map(|fb| fb[fb_start_offset..fb_end_offset].copy_from_slice(buffer.as_slice()))
-            .unwrap();
+        // // Okay, looks good, we can start drawing! Calculate the start offset
+        // // into our framebuffer.
+        // let fb_start_byte_offset = (x_off as usize)
+        //     .checked_mul(self.width as usize)
+        //     .and_then(|o| o.checked_add(y_off as usize))
+        //     .and_then(|o| o.checked_mul(PIXEL_STRIDE))
+        //     .unwrap();
+        // let fb_end_byte_offset = fb_start_byte_offset.checked_add(buffer.len()).unwrap();
 
-        // Update the offset in the draw area, and the number of pixels
-        // remaining:
-        self.current_draw_area.set((
-            draw_rect,
-            (
-                x_off + u32::try_from(buffer_pixels / self.width as usize).unwrap(),
-                y_off + u32::try_from(buffer_pixels % self.width as usize).unwrap(),
-            ),
-            pixels_remaining - buffer_pixels,
-        ));
+        // // The frame buffer must be accessible here. We never "take" it for
+        // // longer than a single, synchronous method call:
+        // self.frame_buffer
+        //     .map(|fb| {
+        //         fb[fb_start_byte_offset..fb_end_byte_offset].copy_from_slice(buffer.as_slice())
+        //     })
+        //     .unwrap();
 
-        // Extend the pending draw area by the drawn bytes.
-        //
-        // TODO: this could be made more efficient by actually respecting the
-        // offsets and length of the buffer written. For now, we just flush the
-        // whole `draw_rect`:
-        self.pending_draw_area
-            .set(self.pending_draw_area.get().extend(draw_rect));
+        // // Update the offset in the draw area, and the number of pixels
+        // // remaining:
+        // self.current_draw_area.set((
+        //     draw_rect,
+        //     (
+        //         x_off + u32::try_from(buffer_pixels / self.width as usize).unwrap(),
+        //         y_off + u32::try_from(buffer_pixels % self.width as usize).unwrap(),
+        //     ),
+        //     pixels_remaining - buffer_pixels,
+        // ));
 
-        // Store the client's buffer. We must hold on to it until we issue the
-        // callback:
-        assert!(self.client_write_buffer.replace(buffer).is_none());
+        // // Extend the pending draw area by the drawn bytes.
+        // //
+        // // TODO: this could be made more efficient by actually respecting the
+        // // offsets and length of the buffer written. For now, we just flush the
+        // // whole `draw_rect`:
+        // self.pending_draw_area
+        //     .set(self.pending_draw_area.get().extend(draw_rect));
 
-        // Tell the screen to draw, please. This will also transition the GPU
-        // device state:
-        self.draw_frame_buffer(DrawMode::Write);
+        // // Store the client's buffer. We must hold on to it until we issue the
+        // // callback:
+        // assert!(self.client_write_buffer.replace(buffer).is_none());
 
-        Ok(())
+        // // Tell the screen to draw, please. This will also transition the GPU
+        // // device state:
+        // self.draw_frame_buffer(DrawMode::Write);
+
+        // Ok(())
     }
 
     fn set_brightness(&self, _brightness: u16) -> Result<(), ErrorCode> {
@@ -1373,6 +1385,8 @@ impl<'a> InMemoryFrameBufferScreen<'a> for VirtIOGPU<'a, '_> {
             ScreenPixelFormat::ARGB_8888,
             frame_buffer,
         );
+
+        kernel::debug!("{:x?}", &frame_buffer[..256]);
 
         // Replace the frame_buffer unconditionally:
         self.frame_buffer.replace(frame_buffer);
@@ -1465,4 +1479,3 @@ impl VirtIODeviceDriver for VirtIOGPU<'_, '_> {
         VirtIODeviceType::GPUDevice
     }
 }
-

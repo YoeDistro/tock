@@ -23,6 +23,8 @@ use rv32i::csr;
 
 pub mod io;
 
+type ScreenDriver = components::screen::ScreenComponentType;
+
 pub const NUM_PROCS: usize = 4;
 
 /// Static variables used by io.rs.
@@ -82,6 +84,7 @@ struct QemuRv32VirtPlatform {
             qemu_rv32_virt_chip::virtio::devices::virtio_net::VirtIONet<'static>,
         >,
     >,
+    virtio_gpu_screen: Option<&'static ScreenDriver>,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -104,6 +107,13 @@ impl SyscallDriverLookup for QemuRv32VirtPlatform {
             capsules_extra::ethernet_tap::DRIVER_NUM => {
                 if let Some(ethernet_tap_driver) = self.virtio_ethernet_tap {
                     f(Some(ethernet_tap_driver))
+                } else {
+                    f(None)
+                }
+            }
+            capsules_extra::screen::DRIVER_NUM => {
+                if let Some(screen_driver) = self.virtio_gpu_screen {
+                    f(Some(screen_driver))
                 } else {
                     f(None)
                 }
@@ -325,9 +335,12 @@ unsafe fn start() -> (
 
     // If there is a VirtIO EntropySource present, use the appropriate VirtIORng
     // driver and expose it to userspace though the RngDriver
-    let virtio_gpu: Option<
-        &'static qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>,
+    let virtio_gpu_screen: Option<
+        // &'static capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage<'static, qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>>,
+        &'static capsules_extra::screen::Screen<'static>,
     > = if let Some(gpu_idx) = virtio_gpu_idx {
+        use kernel::hil::screen::Screen;
+
         use qemu_rv32_virt_chip::virtio::devices::virtio_gpu::{
             VirtIOGPU, MAX_REQ_SIZE, MAX_RESP_SIZE, PIXEL_STRIDE,
         };
@@ -337,9 +350,11 @@ unsafe fn start() -> (
         use qemu_rv32_virt_chip::virtio::queues::Virtqueue;
         use qemu_rv32_virt_chip::virtio::transports::VirtIOTransport;
 
+        use capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage;
+
         // Video output dimensions. We use VGA (600 x 480):
-        const VIDEO_WIDTH: usize = 640;
-        const VIDEO_HEIGHT: usize = 480;
+        const VIDEO_WIDTH: usize = 128;
+        const VIDEO_HEIGHT: usize = 64;
 
         // VirtIO GPU requires a single Virtqueue for sending commands. It can
         // optionally use a second VirtQueue for cursor commands, which we don't
@@ -394,7 +409,30 @@ unsafe fn start() -> (
             .initialize(gpu, mmio_queues)
             .unwrap();
 
-        Some(gpu)
+        // Convert the `ARGB_8888` pixel mode offered by this device into a
+        // pixel mode that the rest of the kernel understands, namely the cursed
+        // `Mono_8BitPage` mode:
+        let screen_argb_8888_to_mono_8bit_page = static_init!(
+            ScreenARGB8888ToMono8BitPage<
+                'static,
+                qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>,
+            >,
+            ScreenARGB8888ToMono8BitPage::new(gpu)
+        );
+        kernel::deferred_call::DeferredCallClient::register(screen_argb_8888_to_mono_8bit_page);
+        gpu.set_client(screen_argb_8888_to_mono_8bit_page);
+
+        let screen = components::screen::ScreenComponent::new(
+            board_kernel,
+            capsules_extra::screen::DRIVER_NUM,
+            screen_argb_8888_to_mono_8bit_page,
+            None,
+        )
+        .finalize(components::screen_component_static!(1032));
+
+        gpu.initialize();
+
+        Some(screen)
     } else {
         // No VirtIO GPU device discovered
         None
@@ -634,6 +672,7 @@ unsafe fn start() -> (
         scheduler_timer,
         virtio_rng: virtio_rng_driver,
         virtio_ethernet_tap,
+        virtio_gpu_screen,
         ipc: kernel::ipc::IPC::new(
             board_kernel,
             kernel::ipc::DRIVER_NUM,
@@ -649,11 +688,30 @@ unsafe fn start() -> (
     // This board dynamically discovers VirtIO devices like a randomness source
     // or a network card. Print a message indicating whether or not each such
     // device and corresponding userspace driver is present:
-    if let Some(gpu) = virtio_gpu {
+    if virtio_gpu_screen.is_some() {
         debug!("- Found VirtIO GPUDevice, enabling video output");
 
-        // Start initializing the GPU:
-        gpu.initialize().unwrap();
+        // // Start initializing the GPU:
+        // let draw_buffer = static_init!([u8; 16], [
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        //     0xAA, 0x55,
+        // ]);
+
+        // let screen_client = static_init!(
+        //     DummyScreenClient<'static, capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage<'static, qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>>>,
+        //     DummyScreenClient {
+        //      screen,
+        //      write_buffer: OptionalCell::new(SubSliceMut::from(&mut draw_buffer[..])),
+        //     }
+        // );
+        // screen.set_client(screen_client);
+        // gpu.initialize().unwrap();
     } else {
         debug!("- VirtIO GPUDevice not found, disabling video output");
     }
@@ -667,6 +725,10 @@ unsafe fn start() -> (
     } else {
         debug!("- VirtIO NetworkCard device not found, disabling EthernetTapDriver");
     }
+
+    //--------------------------------------------------------------------------
+    // SCREEN
+    //--------------------------------------------------------------------------
 
     debug!("Entering main loop.");
 
@@ -701,4 +763,30 @@ pub unsafe fn main() {
 
     let (board_kernel, platform, chip) = start();
     board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_capability);
+}
+
+use kernel::hil::screen::Screen;
+use kernel::utilities::cells::OptionalCell;
+use kernel::utilities::leasable_buffer::SubSliceMut;
+use kernel::ErrorCode;
+
+pub struct DummyScreenClient<'a, S: Screen<'a>> {
+    screen: &'a S,
+    write_buffer: OptionalCell<SubSliceMut<'static, u8>>,
+}
+
+impl<'a, S: Screen<'a>> kernel::hil::screen::ScreenClient for DummyScreenClient<'a, S> {
+    fn command_complete(&self, result: Result<(), ErrorCode>) {
+        kernel::debug!("Command complete: {:?}!", result);
+        self.screen.write(self.write_buffer.take().unwrap(), false);
+    }
+
+    fn write_complete(&self, _buffer: SubSliceMut<'static, u8>, result: Result<(), ErrorCode>) {
+        kernel::debug!("Write complete: {:?}!", result);
+    }
+
+    fn screen_is_ready(&self) {
+        kernel::debug!("Screen is ready!");
+        self.screen.set_write_frame(0, 0, 16, 8).unwrap();
+    }
 }

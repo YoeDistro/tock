@@ -140,16 +140,27 @@ impl ScreenPixelFormat {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Dims {
     pub x: usize,
     pub y: usize,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Rect {
     pub x: usize,
     pub y: usize,
     pub width: usize,
     pub height: usize,
+}
+
+impl Rect {
+    pub const EMPTY: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+    };
 }
 
 /// Interface to configure the screen.
