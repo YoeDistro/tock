@@ -10,7 +10,7 @@
 //! screen config settings (brightness, invert) as those operations affect the
 //! entire screen.
 
-use core::cells::Cell;
+use core::cell::Cell;
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
@@ -20,7 +20,7 @@ use kernel::ErrorCode;
 /// Pending asynchronous screen operation.
 enum ScreenSplitOperation {
     /// Operation to set the writing frame.
-    WriteSetFrame(Frame),
+    WriteSetFrame,
     /// Operation to write a buffer to the screen. `bool` is the continue_write
     /// argument.
     WriteBuffer(SubSliceMut<'static, u8>, bool),
@@ -78,10 +78,16 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplitSection<'a, S> {
             height,
         };
 
+        // Default the write frame to the entire frame provided for this split.
         Self {
             screen_split,
             frame,
-            write_frame: Cell::new(frame),
+            write_frame: Cell::new(Frame {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }),
             pending: OptionalCell::empty(),
             client: OptionalCell::empty(),
         }
@@ -126,7 +132,7 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::Screen<'a> for ScreenSplitSect
 
             // Just mark this operation as intended and then ask the shared
             // split manager to execute it.
-            self.pending.set(ScreenSplitOperation::WriteSetFrame(frame));
+            self.pending.set(ScreenSplitOperation::WriteSetFrame);
             self.screen_split.request_operation()
         }
     }
@@ -184,6 +190,12 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplitSe
     }
 }
 
+enum SplitScreenState {
+    SetFrame,
+    WriteSetFrame(SubSliceMut<'static, u8>, bool),
+    WriteBuffer,
+}
+
 /// Split-screen manager.
 ///
 /// This enables two users (e.g., the kernel and all userspace apps) to share
@@ -199,7 +211,7 @@ pub struct ScreenSplit<'a, S: hil::screen::Screen<'a>> {
     userspace_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
 
     /// Whether userspace or the kernel is currently executing a screen command.
-    current_user: OptionalCell<ScreenSplitUser>,
+    current_user: OptionalCell<(&'a ScreenSplitSection<'a, S>, SplitScreenState)>,
     deferred_call: DeferredCall,
 }
 
@@ -234,7 +246,7 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
         // Check if the kernel has work to do.
         let kernel_ret = if let Some(kernel_user) = self.kernel_split.get() {
             if let Some(operation) = kernel_user.pending.take() {
-                Some(self.call_screen(kernel_user, operation, ScreenSplitUser::Kernel))
+                Some(self.call_screen(kernel_user, operation))
             } else {
                 None
             }
@@ -249,7 +261,7 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
         } else {
             if let Some(userspace_user) = self.userspace_split.get() {
                 if let Some(operation) = userspace_user.pending.take() {
-                    self.call_screen(userspace_user, operation, ScreenSplitUser::Userspace)
+                    self.call_screen(userspace_user, operation)
                 } else {
                     Ok(())
                 }
@@ -263,11 +275,31 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
         &self,
         split: &'a ScreenSplitSection<'a, S>,
         operation: ScreenSplitOperation,
-        user: ScreenSplitUser,
     ) -> Result<(), ErrorCode> {
         match operation {
-            ScreenSplitOperation::WriteSetFrame(frame) => {
-                let absolute_frame = self.calculate_absolute_frame(split.frame, frame);
+            ScreenSplitOperation::WriteSetFrame => {
+                // Just need to set a deferred call since we only write the
+                // frame if we are going to write the screen.
+
+                self.current_user.set((split, SplitScreenState::SetFrame));
+                self.deferred_call.set();
+                Ok(())
+
+                // let absolute_frame = self.calculate_absolute_frame(split.frame, frame);
+
+                // self.screen
+                //     .set_write_frame(
+                //         absolute_frame.x,
+                //         absolute_frame.y,
+                //         absolute_frame.width,
+                //         absolute_frame.height,
+                //     )
+                //     .inspect(|_| self.current_user.set(user))
+            }
+            ScreenSplitOperation::WriteBuffer(subslice, continue_write) => {
+                // First we need to set the frame.
+                let absolute_frame =
+                    self.calculate_absolute_frame(split.frame, split.write_frame.get());
 
                 self.screen
                     .set_write_frame(
@@ -276,12 +308,18 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
                         absolute_frame.width,
                         absolute_frame.height,
                     )
-                    .inspect(|_| self.current_user.set(user))
+                    .inspect(|_| {
+                        self.current_user.set((
+                            split,
+                            SplitScreenState::WriteSetFrame(subslice, continue_write),
+                        ))
+                    })
+
+                // self
+                // .screen
+                // .write(subslice, continue_write)
+                // .inspect(|_| self.current_user.set(user))
             }
-            ScreenSplitOperation::WriteBuffer(subslice, continue_write) => self
-                .screen
-                .write(subslice, continue_write)
-                .inspect(|_| self.current_user.set(user)),
         }
     }
 
@@ -312,39 +350,53 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
 }
 
 impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'a, S> {
-    fn command_complete(&self, r: Result<(), ErrorCode>) {
-        if let Some(current_user) = self.current_user.take() {
-            match current_user {
-                ScreenSplitUser::Kernel => {
-                    if let Some(kernel_user) = self.kernel_split.get() {
-                        kernel_user.command_complete(r);
-                    }
+    fn command_complete(&self, _r: Result<(), ErrorCode>) {
+        if let Some((current_user, state)) = self.current_user.take() {
+            match state {
+                SplitScreenState::WriteSetFrame(subslice, continue_write) => {
+                    self.screen.write(subslice, continue_write).inspect(|_| {
+                        self.current_user
+                            .set((current_user, SplitScreenState::WriteBuffer))
+                    });
                 }
-                ScreenSplitUser::Userspace => {
-                    if let Some(userspace_user) = self.userspace_split.get() {
-                        userspace_user.command_complete(r);
-                    }
+                _ => {
+                    // No other state will trigger this callback.
                 }
             }
+
+            // match current_user {
+            //     ScreenSplitUser::Kernel => {
+            //         if let Some(kernel_user) = self.kernel_split.get() {
+            //             kernel_user.command_complete(r);
+            //         }
+            //     }
+            //     ScreenSplitUser::Userspace => {
+            //         if let Some(userspace_user) = self.userspace_split.get() {
+            //             userspace_user.command_complete(r);
+            //         }
+            //     }
+            // }
         }
 
-        let _ = self.request_operation();
+        // let _ = self.request_operation();
     }
 
     fn write_complete(&self, data: SubSliceMut<'static, u8>, r: Result<(), ErrorCode>) {
-        if let Some(current_user) = self.current_user.take() {
-            match current_user {
-                ScreenSplitUser::Kernel => {
-                    if let Some(kernel_user) = self.kernel_split.get() {
-                        kernel_user.write_complete(data, r);
-                    }
-                }
-                ScreenSplitUser::Userspace => {
-                    if let Some(userspace_user) = self.userspace_split.get() {
-                        userspace_user.write_complete(data, r);
-                    }
-                }
-            }
+        if let Some((current_user, _state)) = self.current_user.take() {
+            current_user.write_complete(data, r);
+
+            // match current_user {
+            //     ScreenSplitUser::Kernel => {
+            //         if let Some(kernel_user) = self.kernel_split.get() {
+            //             kernel_user.write_complete(data, r);
+            //         }
+            //     }
+            //     ScreenSplitUser::Userspace => {
+            //         if let Some(userspace_user) = self.userspace_split.get() {
+            //             userspace_user.write_complete(data, r);
+            //         }
+            //     }
+            // }
         }
 
         let _ = self.request_operation();
@@ -362,7 +414,26 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'
 }
 
 impl<'a, S: hil::screen::Screen<'a>> DeferredCallClient for ScreenSplit<'a, S> {
-    fn handle_deferred_call(&self) {}
+    fn handle_deferred_call(&self) {
+        if let Some((current_user, _state)) = self.current_user.take() {
+            // current_user.command_complete(Ok(()));
+
+            hil::screen::ScreenClient::command_complete(current_user, Ok(()));
+
+            // match current_user {
+            //     ScreenSplitUser::Kernel => {
+            //         if let Some(kernel_user) = self.kernel_split.get() {
+            //             kernel_user.write_complete(data, r);
+            //         }
+            //     }
+            //     ScreenSplitUser::Userspace => {
+            //         if let Some(userspace_user) = self.userspace_split.get() {
+            //             userspace_user.write_complete(data, r);
+            //         }
+            //     }
+            // }
+        }
+    }
 
     fn register(&'static self) {
         self.deferred_call.register(self);
