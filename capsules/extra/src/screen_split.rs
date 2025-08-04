@@ -11,6 +11,7 @@
 //! entire screen.
 
 use core::cell::Cell;
+use kernel::collections::list::{List, ListLink, ListNode};
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
@@ -55,6 +56,7 @@ pub struct ScreenSplitSection<'a, S: hil::screen::Screen<'a>> {
     pending: OptionalCell<ScreenSplitOperation>,
     /// Screen client.
     client: OptionalCell<&'a dyn hil::screen::ScreenClient>,
+    next: ListLink<'a, ScreenSplitSection<'a, S>>,
 }
 
 impl<'a, S: hil::screen::Screen<'a>> ScreenSplitSection<'a, S> {
@@ -84,7 +86,20 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplitSection<'a, S> {
             }),
             pending: OptionalCell::empty(),
             client: OptionalCell::empty(),
+            next: ListLink::empty(),
         }
+    }
+
+    pub fn add_to_mux(&'a self) {
+        self.screen_split.splits.push_head(self);
+    }
+}
+
+impl<'a, S: hil::screen::Screen<'a>> ListNode<'a, ScreenSplitSection<'a, S>>
+    for ScreenSplitSection<'a, S>
+{
+    fn next(&'a self) -> &'a ListLink<'a, ScreenSplitSection<'a, S>> {
+        &self.next
     }
 }
 
@@ -204,12 +219,12 @@ pub struct ScreenSplit<'a, S: hil::screen::Screen<'a>> {
     /// Underlying screen driver to use.
     screen: &'a S,
 
-    /// The first split screen user, for the kernel.
-    kernel_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
+    // /// The first split screen user, for the kernel.
+    // kernel_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
+    splits: List<'a, ScreenSplitSection<'a, S>>,
 
-    /// The second split screen user, for userspace apps.
-    userspace_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
-
+    // /// The second split screen user, for userspace apps.
+    // userspace_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
     /// What is using the split screen and what state this mux is in.
     current_user: OptionalCell<(&'a ScreenSplitSection<'a, S>, ScreenSplitState)>,
 
@@ -221,22 +236,23 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
     pub fn new(screen: &'a S) -> Self {
         Self {
             screen,
+            splits: List::new(),
             current_user: OptionalCell::empty(),
-            kernel_split: OptionalCell::empty(),
-            userspace_split: OptionalCell::empty(),
+            // kernel_split: OptionalCell::empty(),
+            // userspace_split: OptionalCell::empty(),
             deferred_call: DeferredCall::new(),
         }
     }
 
-    /// Set the first user for the kernel.
-    pub fn set_kernel_split(&self, kernel_split: &'a ScreenSplitSection<'a, S>) {
-        self.kernel_split.set(kernel_split)
-    }
+    // /// Set the first user for the kernel.
+    // pub fn set_kernel_split(&self, kernel_split: &'a ScreenSplitSection<'a, S>) {
+    //     self.kernel_split.set(kernel_split)
+    // }
 
-    /// Set the second user for userspace.
-    pub fn set_userspace_split(&self, userspace_split: &'a ScreenSplitSection<'a, S>) {
-        self.userspace_split.set(userspace_split)
-    }
+    // /// Set the second user for userspace.
+    // pub fn set_userspace_split(&self, userspace_split: &'a ScreenSplitSection<'a, S>) {
+    //     self.userspace_split.set(userspace_split)
+    // }
 
     fn request_operation(&self) -> Result<(), ErrorCode> {
         // Check if we are busy with an existing operation. If so, just return
@@ -245,32 +261,66 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
             return Ok(());
         }
 
-        // Check if the kernel has work to do.
-        let kernel_ret = if let Some(kernel_user) = self.kernel_split.get() {
-            if let Some(operation) = kernel_user.pending.take() {
-                Some(self.call_screen(kernel_user, operation))
+        // Check if there is a split that has work to do.
+        if let Some(split) = self.splits.iter().find(|split| split.pending.is_some()) {
+            // We have a split that has requested an operation.
+            if let Some(operation) = split.pending.take() {
+                self.call_screen(split, operation)
             } else {
-                None
+                Err(ErrorCode::NOMEM)
             }
-        } else {
-            None
-        };
 
-        // If kernel did work, then we return. Otherwise, we check the userspace
-        // split.
-        if let Some(kernel_ret) = kernel_ret {
-            kernel_ret
+            // let started = node.operation.take().is_some_and(|operation| {
+            //     match operation {
+            //         Operation::Simple {
+            //             frequency_hz,
+            //             duty_cycle,
+            //         } => {
+            //             let _ = self.pwm.start(&node.pin, frequency_hz, duty_cycle);
+            //             true
+            //         }
+            //         Operation::Stop => {
+            //             // Can't stop if nothing is running
+            //             false
+            //         }
+            //     }
+            // });
+            // if started {
+            //     self.inflight.set(node);
+            // } else {
+            //     // Keep looking for something to do.
+            //     self.do_next_op();
+            // }
         } else {
-            if let Some(userspace_user) = self.userspace_split.get() {
-                if let Some(operation) = userspace_user.pending.take() {
-                    self.call_screen(userspace_user, operation)
-                } else {
-                    Ok(())
-                }
-            } else {
-                Ok(())
-            }
+            Err(ErrorCode::NOMEM)
         }
+
+        // // Check if the kernel has work to do.
+        // let kernel_ret = if let Some(kernel_user) = self.kernel_split.get() {
+        //     if let Some(operation) = kernel_user.pending.take() {
+        //         Some(self.call_screen(kernel_user, operation))
+        //     } else {
+        //         None
+        //     }
+        // } else {
+        //     None
+        // };
+
+        // // If kernel did work, then we return. Otherwise, we check the userspace
+        // // split.
+        // if let Some(kernel_ret) = kernel_ret {
+        //     kernel_ret
+        // } else {
+        //     if let Some(userspace_user) = self.userspace_split.get() {
+        //         if let Some(operation) = userspace_user.pending.take() {
+        //             self.call_screen(userspace_user, operation)
+        //         } else {
+        //             Ok(())
+        //         }
+        //     } else {
+        //         Ok(())
+        //     }
+        // }
     }
 
     fn call_screen(
@@ -360,13 +410,17 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'
     }
 
     fn screen_is_ready(&self) {
-        if let Some(kernel_user) = self.kernel_split.get() {
-            kernel_user.screen_is_ready();
-        }
+        // if let Some(kernel_user) = self.kernel_split.get() {
+        //     kernel_user.screen_is_ready();
+        // }
 
-        if let Some(userspace_user) = self.userspace_split.get() {
-            userspace_user.screen_is_ready();
-        }
+        // if let Some(userspace_user) = self.userspace_split.get() {
+        //     userspace_user.screen_is_ready();
+        // }
+
+        self.splits.iter().for_each(|split| {
+            split.screen_is_ready();
+        })
     }
 }
 
