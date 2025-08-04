@@ -5,7 +5,10 @@
 use core::cell::Cell;
 
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
-use kernel::hil::screen::{Screen, ScreenClient, ScreenPixelFormat, ScreenRotation};
+use kernel::hil::screen::{
+    Dims as ScreenDims, InMemoryFrameBufferScreen, Rect as ScreenRect, Screen, ScreenClient,
+    ScreenPixelFormat, ScreenRotation,
+};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::ErrorCode;
@@ -576,6 +579,12 @@ enum VideoFormat {
     R8G8B8X8Unorm = 134,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DrawMode {
+    Write,
+    WriteToFrameBuffer,
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum VirtIOGPUState {
     Uninitialized,
@@ -586,8 +595,8 @@ pub enum VirtIOGPUState {
     InitializingResourceFlush,
     Idle,
     SettingWriteFrame,
-    DrawTransferToHost2D,
-    DrawResourceFlush,
+    DrawTransferToHost2D(DrawMode),
+    DrawResourceFlush(DrawMode),
 }
 
 #[derive(Copy, Clone)]
@@ -645,6 +654,7 @@ pub struct VirtIOGPU<'a, 'b> {
     height: u32,
 
     // Pending output update state:
+    current_flush_area: Cell<Rect>,
     pending_draw_area: Cell<Rect>,
 
     // Set up by `Screen::set_write_frame`, and then later written to with a
@@ -694,6 +704,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             width,
             height,
 
+            current_flush_area: Cell::new(Rect::empty()),
             pending_draw_area: Cell::new(Rect::empty()),
             current_draw_area: Cell::new((Rect::empty(), (0, 0), 0)),
             client_write_buffer: OptionalCell::empty(),
@@ -879,21 +890,28 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         self.draw_frame_buffer_int();
     }
 
-    fn draw_frame_buffer(&self) {
+    fn draw_frame_buffer(&self, mode: DrawMode) {
         // Call the `draw_frame_buffer_int` shared with the initialization
         // routine, but setting a `DrawTransferToHost2D` state instead, which
         // communicates that we're not in the initialization routine any more:
-        self.state.set(VirtIOGPUState::DrawTransferToHost2D);
+        self.state.set(VirtIOGPUState::DrawTransferToHost2D(mode));
         self.draw_frame_buffer_int();
     }
 
     fn draw_frame_buffer_int(&self) {
         // Make sure we've entered the correct state before calling this method:
         match self.state.get() {
-            VirtIOGPUState::DrawTransferToHost2D => (),
+            VirtIOGPUState::DrawTransferToHost2D(_mode) => (),
             VirtIOGPUState::InitializingTransferToHost2D => (),
             s => panic!("Called draw_frame_buffer_int in invalid state {:?}", s),
         }
+
+        // Transfer the `pending_draw_area` into the `current_flush_area`, and
+        // reset the `pending_draw_area`. This allows concurrent calls to
+        // `write_to_frame_buffer` to set up new redraw areas while we're
+        // performing the flush:
+        self.current_flush_area.set(self.pending_draw_area.get());
+        self.pending_draw_area.set(Rect::empty());
 
         let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
 
@@ -905,7 +923,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: self.pending_draw_area.get(),
+            r: self.current_flush_area.get(),
             offset: 0,
             resource_id: 1,
             padding: 0,
@@ -945,12 +963,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: Rect {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
-            },
+            r: self.current_flush_area.get(),
             resource_id: 1,
             padding: 0,
         };
@@ -976,8 +989,8 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             VirtIOGPUState::InitializingTransferToHost2D => {
                 self.state.set(VirtIOGPUState::InitializingResourceFlush);
             }
-            VirtIOGPUState::DrawTransferToHost2D => {
-                self.state.set(VirtIOGPUState::DrawResourceFlush);
+            VirtIOGPUState::DrawTransferToHost2D(mode) => {
+                self.state.set(VirtIOGPUState::DrawResourceFlush(mode));
             }
             s => panic!(
                 "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
@@ -994,12 +1007,12 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
     ) {
         self.req_resp_buffers.replace((req_buffer, resp_buffer));
 
-        // Reset the pending draw area:
-        self.pending_draw_area.set(Rect::empty());
+        // Reset the flush area:
+        self.current_flush_area.set(Rect::empty());
 
         // If this was in response to a draw command, issue a callback:
         match self.state.get() {
-            VirtIOGPUState::DrawResourceFlush => {
+            VirtIOGPUState::DrawResourceFlush(_mode) => {
                 self.client
                     .map(|c| c.write_complete(self.client_write_buffer.take().unwrap(), Ok(())));
             }
@@ -1010,8 +1023,15 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             ),
         }
 
-        // Return to idle:
-        self.state.set(VirtIOGPUState::Idle);
+        // Check if we have received more data to draw in the meantime. This is
+        // only possible when using `write_to_frame_buffer`:
+        if !self.pending_draw_area.get().is_empty() {
+            // Start another draw operation:
+            self.draw_frame_buffer(DrawMode::WriteToFrameBuffer);
+        } else {
+            // Return to idle:
+            self.state.set(VirtIOGPUState::Idle);
+        }
     }
 
     fn buffer_chain_callback(
@@ -1105,7 +1125,8 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 VirtIOGPUState::InitializingTransferToHost2D,
                 TransferToHost2DResp::EXPECTED_CTRL_TYPE,
             )
-            | (VirtIOGPUState::DrawTransferToHost2D, TransferToHost2DResp::EXPECTED_CTRL_TYPE) => {
+            | (VirtIOGPUState::DrawTransferToHost2D(_), TransferToHost2DResp::EXPECTED_CTRL_TYPE) =>
+            {
                 // Parse the remainder of the response:
                 let resp = TransferToHost2DResp::from_byte_iter_post_ctrl_header(
                     ctrl_header,
@@ -1118,7 +1139,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             }
 
             (VirtIOGPUState::InitializingResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE)
-            | (VirtIOGPUState::DrawResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
+            | (VirtIOGPUState::DrawResourceFlush(_), ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
                 // Parse the remainder of the response:
                 let resp =
                     ResourceFlushResp::from_byte_iter_post_ctrl_header(ctrl_header, &mut resp_iter)
@@ -1136,8 +1157,8 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             | (VirtIOGPUState::InitializingResourceFlush, _)
             | (VirtIOGPUState::Idle, _)
             | (VirtIOGPUState::SettingWriteFrame, _)
-            | (VirtIOGPUState::DrawTransferToHost2D, _)
-            | (VirtIOGPUState::DrawResourceFlush, _) => {
+            | (VirtIOGPUState::DrawTransferToHost2D(_), _)
+            | (VirtIOGPUState::DrawResourceFlush(_), _) => {
                 panic!("Received unexpected VirtIO GPU device response. Device state: {:?}, ctrl hader: {:?}", self.state.get(), ctrl_header);
             }
         }
@@ -1299,7 +1320,7 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
 
         // Tell the screen to draw, please. This will also transition the GPU
         // device state:
-        self.draw_frame_buffer();
+        self.draw_frame_buffer(DrawMode::Write);
 
         Ok(())
     }
@@ -1319,6 +1340,83 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
 
     fn set_invert(&self, _enabled: bool) -> Result<(), ErrorCode> {
         Err(ErrorCode::NOSUPPORT)
+    }
+}
+
+impl<'a> InMemoryFrameBufferScreen<'a> for VirtIOGPU<'a, '_> {
+    fn write_to_frame_buffer(
+        &self,
+        f: impl FnOnce(ScreenDims, ScreenPixelFormat, &mut [u8]) -> Result<ScreenRect, ErrorCode>,
+    ) -> Result<(), ErrorCode> {
+        // Check that we're not busy. We allow multiple calls to this method, as
+        // per its documentation.
+        let idle = match self.state.get() {
+            VirtIOGPUState::Idle => true,
+            VirtIOGPUState::DrawTransferToHost2D(DrawMode::WriteToFrameBuffer) => false,
+            VirtIOGPUState::DrawResourceFlush(DrawMode::WriteToFrameBuffer) => false,
+            _ => return Err(ErrorCode::BUSY),
+        };
+
+        // Try to get a hold of the frame buffer. If it's already taken, this is
+        // likely because of a reentrant call to this function. Return `BUSY` in
+        // that case:
+        let Some(frame_buffer) = self.frame_buffer.take() else {
+            return Err(ErrorCode::BUSY);
+        };
+
+        // Pass it to the closure:
+        let closure_res = f(
+            ScreenDims {
+                x: self.width as usize,
+                y: self.height as usize,
+            },
+            ScreenPixelFormat::ARGB_8888,
+            frame_buffer,
+        );
+
+        // Replace the frame_buffer unconditionally:
+        self.frame_buffer.replace(frame_buffer);
+
+        match closure_res {
+            Err(e) => {
+                // The closure returned an error, we do not need to emit a
+                // callback.
+                Err(e)
+            }
+
+            Ok(screen_rect) => {
+                // The closure modified the frame buffer, issue a redraw of the
+                // changed area. We first check that the to-draw area actually
+                // fits:
+                let x: u32 = screen_rect.x.try_into().map_err(|_| ErrorCode::SIZE)?;
+                let y: u32 = screen_rect.y.try_into().map_err(|_| ErrorCode::SIZE)?;
+                let width: u32 = screen_rect.width.try_into().map_err(|_| ErrorCode::SIZE)?;
+                let height: u32 = screen_rect.height.try_into().map_err(|_| ErrorCode::SIZE)?;
+
+                if x.checked_add(width).ok_or(ErrorCode::SIZE)? > self.width
+                    || y.checked_add(height).ok_or(ErrorCode::SIZE)? > self.height
+                {
+                    return Err(ErrorCode::SIZE);
+                }
+
+                // Extend the to-redraw area:
+                self.pending_draw_area
+                    .set(self.pending_draw_area.get().extend(Rect {
+                        x,
+                        y,
+                        width,
+                        height,
+                    }));
+
+                // If we're idle, issue a re-draw. Otherwise, one will
+                // automatically be issued after the current draw operation:
+                if idle {
+                    self.draw_frame_buffer(DrawMode::WriteToFrameBuffer);
+                }
+
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1367,3 +1465,4 @@ impl VirtIODeviceDriver for VirtIOGPU<'_, '_> {
         VirtIODeviceType::GPUDevice
     }
 }
+
