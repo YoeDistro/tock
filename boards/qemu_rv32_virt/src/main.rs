@@ -159,6 +159,7 @@ impl
 /// removed when this function returns. Otherwise, the stack space used for
 /// these static_inits is wasted.
 #[inline(never)]
+#[allow(clippy::large_stack_frames, clippy::large_stack_arrays)]
 unsafe fn start() -> (
     &'static kernel::Kernel,
     QemuRv32VirtPlatform,

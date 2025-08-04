@@ -5,7 +5,9 @@
 use core::cell::Cell;
 
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
+use kernel::hil::screen::{Screen, ScreenClient, ScreenPixelFormat, ScreenRotation};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
+use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::ErrorCode;
 
 use super::super::devices::{VirtIODeviceDriver, VirtIODeviceType};
@@ -37,9 +39,9 @@ const fn max(elems: &[usize]) -> usize {
 #[inline]
 fn copy_to_iter<'a, T: 'a>(
     dst: &mut impl Iterator<Item = &'a mut T>,
-    mut src: impl Iterator<Item = T>,
+    src: impl Iterator<Item = T>,
 ) {
-    while let Some(e) = src.next() {
+    for e in src {
         *dst.next().unwrap() = e;
     }
 }
@@ -128,6 +130,52 @@ struct Rect {
 }
 
 impl Rect {
+    pub const fn empty() -> Self {
+        Rect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 && self.height == 0
+    }
+
+    pub fn extend(&self, other: Rect) -> Rect {
+        use core::cmp::{max, min};
+
+        // If either one of the `Rect`s is empty, simply return the other:
+        if self.is_empty() {
+            other
+        } else if other.is_empty() {
+            *self
+        } else {
+            // Determine the "x1" for both self and other, so that we can calculate
+            // the final width based on the distance of the larger of the two "x0"s
+            // and the larger of the two "x1"s:
+            let self_x1 = self.x.saturating_add(self.width);
+            let other_x1 = other.x.saturating_add(other.width);
+
+            // Same for "y1"s:
+            let self_y1 = self.y.saturating_add(self.height);
+            let other_y1 = other.y.saturating_add(other.height);
+
+            // Now, build the rect:
+            let new_x0 = min(self.x, other.x);
+            let new_x1 = max(self_x1, other_x1);
+            let new_y0 = min(self.y, other.y);
+            let new_y1 = max(self_y1, other_y1);
+            Rect {
+                x: new_x0,
+                y: new_y0,
+                width: new_x1.saturating_sub(new_x0),
+                height: new_y1.saturating_sub(new_y0),
+            }
+        }
+    }
+
     fn write_to_byte_iter<'a>(&self, dst: &mut impl Iterator<Item = &'a mut u8>) {
         // Write out fields to iterator.
         //
@@ -172,6 +220,7 @@ trait VirtIOGPUResp {
         }
     }
 
+    #[allow(dead_code)]
     fn from_byte_iter(src: &mut impl Iterator<Item = u8>) -> Result<Self, ErrorCode>
     where
         Self: Sized,
@@ -527,8 +576,6 @@ enum VideoFormat {
     R8G8B8X8Unorm = 134,
 }
 
-pub trait GPUClient {}
-
 #[derive(Copy, Clone, Debug)]
 pub enum VirtIOGPUState {
     Uninitialized,
@@ -538,17 +585,81 @@ pub enum VirtIOGPUState {
     InitializingTransferToHost2D,
     InitializingResourceFlush,
     Idle,
+    SettingWriteFrame,
+    DrawTransferToHost2D,
+    DrawResourceFlush,
+}
+
+#[derive(Copy, Clone)]
+#[repr(usize)]
+pub enum PendingDeferredCall {
+    SetWriteFrame,
+}
+
+struct PendingDeferredCallMask(Cell<usize>);
+
+impl PendingDeferredCallMask {
+    pub fn new() -> Self {
+        PendingDeferredCallMask(Cell::new(0))
+    }
+
+    pub fn get_copy_and_clear(&self) -> PendingDeferredCallMask {
+        let old = PendingDeferredCallMask(self.0.clone());
+        self.0.set(0);
+        old
+    }
+
+    pub fn set(&self, call: PendingDeferredCall) {
+        self.0.set(self.0.get() | (1 << (call as usize)));
+    }
+
+    pub fn is_set(&self, call: PendingDeferredCall) -> bool {
+        (self.0.get() & (1 << (call as usize))) != 0
+    }
+
+    pub fn for_each_call(&self, mut f: impl FnMut(PendingDeferredCall)) {
+        let mut check_and_invoke = |call| {
+            if self.is_set(call) {
+                f(call)
+            }
+        };
+
+        check_and_invoke(PendingDeferredCall::SetWriteFrame);
+    }
 }
 
 pub struct VirtIOGPU<'a, 'b> {
-    control_queue: &'a SplitVirtqueue<'a, 'b, 2>,
-    deferred_call: DeferredCall,
-    client: OptionalCell<&'a dyn GPUClient>,
+    // Misc driver state:
+    client: OptionalCell<&'a dyn ScreenClient>,
     state: Cell<VirtIOGPUState>,
+    deferred_call: DeferredCall,
+    pending_deferred_call_mask: PendingDeferredCallMask,
+
+    // VirtIO bus and buffers:
+    control_queue: &'a SplitVirtqueue<'a, 'b, 2>,
+    req_resp_buffers: OptionalCell<(&'b mut [u8; MAX_REQ_SIZE], &'b mut [u8; MAX_RESP_SIZE])>,
+
+    // Frame buffer and output parameters:
     frame_buffer: TakeCell<'a, [u8]>,
     width: u32,
     height: u32,
-    req_resp_buffers: OptionalCell<(&'b mut [u8; MAX_REQ_SIZE], &'b mut [u8; MAX_RESP_SIZE])>,
+
+    // Pending output update state:
+    pending_draw_area: Cell<Rect>,
+
+    // Set up by `Screen::set_write_frame`, and then later written to with a
+    // call to `Screen::write`. It contains the `Rect` being written to, and the
+    // current write offset in (x, y) coordinates:
+    current_draw_area: Cell<(
+        // Draw area:
+        Rect,
+        // Current draw offset:
+        (u32, u32),
+        // Optimization -- number of pixels left in the draw area, starting from
+        // the offset:
+        usize,
+    )>,
+    client_write_buffer: OptionalCell<SubSliceMut<'static, u8>>,
 }
 
 impl<'a, 'b> VirtIOGPU<'a, 'b> {
@@ -571,14 +682,21 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         }
 
         Ok(VirtIOGPU {
-            control_queue,
-            deferred_call: DeferredCall::new(),
             client: OptionalCell::empty(),
             state: Cell::new(VirtIOGPUState::Uninitialized),
+            deferred_call: DeferredCall::new(),
+            pending_deferred_call_mask: PendingDeferredCallMask::new(),
+
+            control_queue,
+            req_resp_buffers: OptionalCell::new((req_buffer, resp_buffer)),
+
             frame_buffer: TakeCell::new(frame_buffer),
             width,
             height,
-            req_resp_buffers: OptionalCell::new((req_buffer, resp_buffer)),
+
+            pending_draw_area: Cell::new(Rect::empty()),
+            current_draw_area: Cell::new((Rect::empty(), (0, 0), 0)),
+            client_write_buffer: OptionalCell::empty(),
         })
     }
 
@@ -595,6 +713,14 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         // initialization:
         let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
 
+        // Mark the entire frame buffer as to be re-drawn:
+        self.pending_draw_area.set(Rect {
+            x: 0,
+            y: 0,
+            width: self.width,
+            height: self.height,
+        });
+
         // Step 1: Create host resource
         let cmd_resource_create_2d_req = ResourceCreate2DReq {
             ctrl_header: CtrlHeader {
@@ -605,7 +731,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 padding: 0,
             },
             resource_id: 1,
-            format: VideoFormat::R8G8B8A8Unorm,
+            format: VideoFormat::A8R8G8B8Unorm,
             width: self.width,
             height: self.height,
         };
@@ -634,7 +760,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
 
     fn initialize_resource_create_2d_resp(
         &self,
-        resp: ResourceCreate2DResp,
+        _resp: ResourceCreate2DResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
@@ -693,7 +819,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
 
     fn initialize_resource_attach_backing_resp(
         &self,
-        resp: ResourceAttachBackingResp,
+        _resp: ResourceAttachBackingResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
@@ -738,14 +864,39 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
 
     fn initialize_set_scanout_resp(
         &self,
-        resp: SetScanoutResp,
+        _resp: SetScanoutResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
-        // Initialization done!
+        // Initialization done! Return the buffers, first of all:
+        self.req_resp_buffers.replace((req_buffer, resp_buffer));
 
         // As one final step, we draw the contents of the framebuffer that was
-        // passed to us initially:
+        // passed to us initially. We use the common `draw_frame_buffer_int`
+        // method, but setting the appropriate state, to distinguish from a
+        // regular draw command:
+        self.state.set(VirtIOGPUState::InitializingTransferToHost2D);
+        self.draw_frame_buffer_int();
+    }
+
+    fn draw_frame_buffer(&self) {
+        // Call the `draw_frame_buffer_int` shared with the initialization
+        // routine, but setting a `DrawTransferToHost2D` state instead, which
+        // communicates that we're not in the initialization routine any more:
+        self.state.set(VirtIOGPUState::DrawTransferToHost2D);
+        self.draw_frame_buffer_int();
+    }
+
+    fn draw_frame_buffer_int(&self) {
+        // Make sure we've entered the correct state before calling this method:
+        match self.state.get() {
+            VirtIOGPUState::DrawTransferToHost2D => (),
+            VirtIOGPUState::InitializingTransferToHost2D => (),
+            s => panic!("Called draw_frame_buffer_int in invalid state {:?}", s),
+        }
+
+        let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
+
         let cmd_transfer_to_host_2d_req = TransferToHost2DReq {
             ctrl_header: CtrlHeader {
                 ctrl_type: TransferToHost2DReq::CTRL_TYPE,
@@ -754,12 +905,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: Rect {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
-            },
+            r: self.pending_draw_area.get(),
             offset: 0,
             resource_id: 1,
             padding: 0,
@@ -781,18 +927,16 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         self.control_queue
             .provide_buffer_chain(&mut buffer_chain)
             .unwrap();
-
-        self.state.set(VirtIOGPUState::InitializingTransferToHost2D);
     }
 
-    fn initialize_transfer_to_host_2d_resp(
+    fn draw_transfer_to_host_2d_resp(
         &self,
-        resp: TransferToHost2DResp,
+        _resp: TransferToHost2DResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
-        // As one final step, we draw the contents of the framebuffer that was
-        // passed to us initially:
+        // Now draw the contents of the framebuffer that was passed to us
+        // initially:
         let cmd_resource_flush_req = ResourceFlushReq {
             ctrl_header: CtrlHeader {
                 ctrl_type: ResourceFlushReq::CTRL_TYPE,
@@ -828,23 +972,49 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             .provide_buffer_chain(&mut buffer_chain)
             .unwrap();
 
-        self.state.set(VirtIOGPUState::InitializingResourceFlush);
+        match self.state.get() {
+            VirtIOGPUState::InitializingTransferToHost2D => {
+                self.state.set(VirtIOGPUState::InitializingResourceFlush);
+            }
+            VirtIOGPUState::DrawTransferToHost2D => {
+                self.state.set(VirtIOGPUState::DrawResourceFlush);
+            }
+            s => panic!(
+                "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
+                s
+            ),
+        }
     }
 
-    fn initialize_resource_flush_resp(
+    fn draw_resource_flush_resp(
         &self,
-        resp: ResourceFlushResp,
+        _resp: ResourceFlushResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
         self.req_resp_buffers.replace((req_buffer, resp_buffer));
+
+        // If this was in response to a draw command, issue a callback:
+        match self.state.get() {
+            VirtIOGPUState::DrawResourceFlush => {
+                self.client
+                    .map(|c| c.write_complete(self.client_write_buffer.take().unwrap(), Ok(())));
+            }
+            VirtIOGPUState::InitializingResourceFlush => (),
+            s => panic!(
+                "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
+                s
+            ),
+        }
+
+        // Return to idle:
         self.state.set(VirtIOGPUState::Idle);
     }
 
     fn buffer_chain_callback(
         &self,
         buffer_chain: &mut [Option<VirtqueueBuffer<'b>>],
-        bytes_used: usize,
+        _bytes_used: usize,
     ) {
         // Every response should return exactly two buffers: one
         // request buffer, and one response buffer.
@@ -931,7 +1101,8 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             (
                 VirtIOGPUState::InitializingTransferToHost2D,
                 TransferToHost2DResp::EXPECTED_CTRL_TYPE,
-            ) => {
+            )
+            | (VirtIOGPUState::DrawTransferToHost2D, TransferToHost2DResp::EXPECTED_CTRL_TYPE) => {
                 // Parse the remainder of the response:
                 let resp = TransferToHost2DResp::from_byte_iter_post_ctrl_header(
                     ctrl_header,
@@ -940,17 +1111,18 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 .expect("Failed to parse VirtIO GPU TransferToHost2DResp");
 
                 // Continue the initialization routine:
-                self.initialize_transfer_to_host_2d_resp(resp, req_array, resp_array);
+                self.draw_transfer_to_host_2d_resp(resp, req_array, resp_array);
             }
 
-            (VirtIOGPUState::InitializingResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
+            (VirtIOGPUState::InitializingResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE)
+            | (VirtIOGPUState::DrawResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
                 // Parse the remainder of the response:
                 let resp =
                     ResourceFlushResp::from_byte_iter_post_ctrl_header(ctrl_header, &mut resp_iter)
                         .expect("Failed to parse VirtIO GPU ResourceFlushResp");
 
                 // Continue the initialization routine:
-                self.initialize_resource_flush_resp(resp, req_array, resp_array);
+                self.draw_resource_flush_resp(resp, req_array, resp_array);
             }
 
             (VirtIOGPUState::Uninitialized, _)
@@ -959,52 +1131,193 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             | (VirtIOGPUState::InitializingSetScanout, _)
             | (VirtIOGPUState::InitializingTransferToHost2D, _)
             | (VirtIOGPUState::InitializingResourceFlush, _)
-            | (VirtIOGPUState::Idle, _) => {
+            | (VirtIOGPUState::Idle, _)
+            | (VirtIOGPUState::SettingWriteFrame, _)
+            | (VirtIOGPUState::DrawTransferToHost2D, _)
+            | (VirtIOGPUState::DrawResourceFlush, _) => {
                 panic!("Received unexpected VirtIO GPU device response. Device state: {:?}, ctrl hader: {:?}", self.state.get(), ctrl_header);
             }
         }
     }
 }
 
-// impl<'a> GPU<'a> for VirtIOGPU<'a, '_> {
-//     fn get(&self) -> Result<(), ErrorCode> {
-//         // Minimum buffer capacity must be 4 bytes for a single 32-bit
-//         // word
-//         if self.buffer_capacity.get() < 4 {
-//             Err(ErrorCode::FAIL)
-//         } else if self.client.is_none() {
-//             Err(ErrorCode::FAIL)
-//         } else if self.callback_pending.get() {
-//             Err(ErrorCode::OFF)
-//         } else if self.virtqueue.used_descriptor_chains_count() < 1 {
-//             // There is no buffer ready in the queue, so let's rely
-//             // purely on queue callbacks to notify us of the next
-//             // incoming one
-//             self.callback_pending.set(true);
-//             self.virtqueue.enable_used_callbacks();
-//             Ok(())
-//         } else {
-//             // There is a buffer in the virtqueue, get it and return
-//             // it to a client in a deferred call
-//             self.callback_pending.set(true);
-//             self.deferred_call.set();
-//             Ok(())
-//         }
-//     }
+impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
+    fn set_client(&self, client: &'a dyn ScreenClient) {
+        self.client.replace(client);
+    }
 
-//     fn cancel(&self) -> Result<(), ErrorCode> {
-//         // Cancel by setting the callback_pending flag to false which
-//         // MUST be checked prior to every callback
-//         self.callback_pending.set(false);
+    fn get_resolution(&self) -> (usize, usize) {
+        (self.width as usize, self.height as usize)
+    }
 
-//         // For efficiency reasons, also unsubscribe from the virtqueue
-//         // callbacks, which will let the buffers remain in the queue
-//         // for future use
-//         self.virtqueue.disable_used_callbacks();
+    fn get_pixel_format(&self) -> ScreenPixelFormat {
+        ScreenPixelFormat::ARGB_8888
+    }
 
-//         Ok(())
-//     }
-// }
+    fn get_rotation(&self) -> ScreenRotation {
+        ScreenRotation::Normal
+    }
+
+    fn set_write_frame(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<(), ErrorCode> {
+        // Make sure we're idle:
+        let VirtIOGPUState::Idle = self.state.get() else {
+            return Err(ErrorCode::BUSY);
+        };
+
+        // We first convert the coordinates to u32s:
+        let x: u32 = x.try_into().map_err(|_| ErrorCode::INVAL)?;
+        let y: u32 = y.try_into().map_err(|_| ErrorCode::INVAL)?;
+        let width: u32 = width.try_into().map_err(|_| ErrorCode::INVAL)?;
+        let height: u32 = height.try_into().map_err(|_| ErrorCode::INVAL)?;
+
+        // Ensure that the draw area actually fits our screen:
+        let x1 = x.checked_add(width).ok_or(ErrorCode::INVAL)?;
+        let y1 = y.checked_add(height).ok_or(ErrorCode::INVAL)?;
+        if x1 > self.width || y1 > self.height {
+            return Err(ErrorCode::INVAL);
+        }
+
+        // Calculate the overall number of pixels in the draw area:
+        let pixels = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(ErrorCode::INVAL)?;
+
+        // We don't extend the pending draw area with this rect right now, only
+        // doing so for actual calls to `write`. However, we do store the new
+        // drawing area as the bounding box and offset coordinates for `write`:
+        self.current_draw_area.set((
+            // Draw area:
+            Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            // Current draw offset:
+            (0, 0),
+            // Pixels left to draw:
+            pixels,
+        ));
+
+        // Set the device state to busy and issue the callback in a deferred
+        // call:
+        self.state.set(VirtIOGPUState::SettingWriteFrame);
+        self.pending_deferred_call_mask
+            .set(PendingDeferredCall::SetWriteFrame);
+        self.deferred_call.set();
+
+        Ok(())
+    }
+
+    fn write(
+        &self,
+        mut buffer: SubSliceMut<'static, u8>,
+        continue_write: bool,
+    ) -> Result<(), ErrorCode> {
+        // Make sure we're idle:
+        let VirtIOGPUState::Idle = self.state.get() else {
+            return Err(ErrorCode::BUSY);
+        };
+
+        // Write the contents of `buffer` to the internal frame buffer, in the
+        // draw area set by `set_write_frame`.
+        //
+        // If `continue_write` is false, we must reset `x_off`, `y_off` and the
+        // `pixels_remaining` value. Otherwise we start at the stored offset.
+        let (draw_rect, (x_off, y_off), pixels_remaining) = if continue_write {
+            self.current_draw_area.get()
+        } else {
+            let (draw_rect, _, _) = self.current_draw_area.get();
+
+            // This multiplication must not overflow, as it hasn't overflowed
+            // when we performed it in `set_write_frame`:
+            (
+                draw_rect,
+                (0, 0),
+                (draw_rect.width as usize)
+                    .checked_mul(draw_rect.height as usize)
+                    .unwrap(),
+            )
+        };
+
+        // Make sure the buffer has a length compatible with our pixel mode:
+        if buffer.len() % PIXEL_STRIDE != 0 {
+            // TODO: this error code is not yet supported in the HIL:
+            return Err(ErrorCode::INVAL);
+        }
+        let buffer_pixels = buffer.len() / PIXEL_STRIDE;
+
+        // Check whether this buffer will fit the remaining draw area:
+        if buffer_pixels > pixels_remaining {
+            return Err(ErrorCode::SIZE);
+        }
+
+        // Okay, looks good, we can start drawing! Calculate the start offset
+        // into our framebuffer. This computation must never overflow, as we've
+        // checked that `self.width * self.height` fits into a `u32` in `new()`:
+        let fb_start_offset =
+            (x_off as usize).checked_mul(self.width as usize).unwrap() + (y_off as usize);
+        let fb_end_offset = fb_start_offset.checked_add(buffer.len()).unwrap();
+
+        // The frame buffer must be accessible here. We never "take" it for
+        // longer than a single, synchronous method call:
+        self.frame_buffer
+            .map(|fb| fb[fb_start_offset..fb_end_offset].copy_from_slice(buffer.as_slice()))
+            .unwrap();
+
+        // Update the offset in the draw area, and the number of pixels
+        // remaining:
+        self.current_draw_area.set((
+            draw_rect,
+            (
+                x_off + u32::try_from(buffer_pixels / self.width as usize).unwrap(),
+                y_off + u32::try_from(buffer_pixels % self.width as usize).unwrap(),
+            ),
+            pixels_remaining - buffer_pixels,
+        ));
+
+        // Extend the pending draw area by the drawn bytes.
+        //
+        // TODO: this could be made more efficient by actually respecting the
+        // offsets and length of the buffer written. For now, we just flush the
+        // whole `draw_rect`:
+        self.pending_draw_area
+            .set(self.pending_draw_area.get().extend(draw_rect));
+
+        // Store the client's buffer. We must hold on to it until we issue the
+        // callback:
+        assert!(self.client_write_buffer.replace(buffer).is_none());
+
+        // Tell the screen to draw, please. This will also transition the GPU
+        // device state:
+        self.draw_frame_buffer();
+
+        Ok(())
+    }
+
+    fn set_brightness(&self, _brightness: u16) -> Result<(), ErrorCode> {
+        // nop, not supported
+        Ok(())
+    }
+
+    fn set_power(&self, enabled: bool) -> Result<(), ErrorCode> {
+        if !enabled {
+            Err(ErrorCode::INVAL)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_invert(&self, _enabled: bool) -> Result<(), ErrorCode> {
+        Err(ErrorCode::NOSUPPORT)
+    }
+}
 
 impl<'b> SplitVirtqueueClient<'b> for VirtIOGPU<'_, 'b> {
     fn buffer_chain_ready(
@@ -1023,19 +1336,20 @@ impl DeferredCallClient for VirtIOGPU<'_, '_> {
     }
 
     fn handle_deferred_call(&self) {
-        todo!()
-        // // Try to extract a descriptor chain
-        // if let Some((mut chain, bytes_used)) = self.virtqueue.pop_used_buffer_chain() {
-        //     self.buffer_chain_callback(&mut chain, bytes_used)
-        // } else {
-        //     // If we don't get a buffer, this must be a race condition
-        //     // which should not occur
-        //     //
-        //     // Prior to setting a deferred call, all virtqueue
-        //     // interrupts must be disabled so that no used buffer is
-        //     // removed before the deferred call callback
-        //     panic!("VirtIO GPU: deferred call callback with empty queue");
-        // }
+        let calls = self.pending_deferred_call_mask.get_copy_and_clear();
+        calls.for_each_call(|call| match call {
+            PendingDeferredCall::SetWriteFrame => {
+                let VirtIOGPUState::SettingWriteFrame = self.state.get() else {
+                    panic!(
+                        "Unexpected VirtIOGPUState {:?} for SetWriteFrame deferred call",
+                        self.state.get()
+                    );
+                };
+
+                // Issue callback:
+                self.client.map(|c| c.command_complete(Ok(())));
+            }
+        })
     }
 }
 
