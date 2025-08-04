@@ -26,14 +26,6 @@ enum ScreenSplitOperation {
     WriteBuffer(SubSliceMut<'static, u8>, bool),
 }
 
-/// Which user currently has an outstanding screen operation.
-enum ScreenSplitUser {
-    /// User 1, the kernel.
-    Kernel,
-    /// User 2, routed to userspace.
-    Userspace,
-}
-
 /// Rectangular region of a screen.
 #[derive(Default, Clone, Copy, PartialEq)]
 pub struct Frame {
@@ -54,6 +46,8 @@ pub struct ScreenSplitSection<'a, S: hil::screen::Screen<'a>> {
     screen_split: &'a ScreenSplit<'a, S>,
     /// The frame within the entire screen this split section has access to.
     frame: Frame,
+    /// The frame inside of the split that is active. Defaults to the entire
+    /// frame.
     write_frame: Cell<Frame>,
     /// What operation this section would like to do.[`ScreenSplitSection`] sets
     /// its intended operation here and then asks the [`ScreenSplit`] to
@@ -190,9 +184,15 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplitSe
     }
 }
 
-enum SplitScreenState {
+/// What the screen split mux is currently working on.
+enum ScreenSplitState {
+    /// Setting the frame is just recording the write frame, so this just needs
+    /// to simulate a callback.
     SetFrame,
+    /// Do a write to the screen. First step is setting the frame.
     WriteSetFrame(SubSliceMut<'static, u8>, bool),
+    /// Do a write to the screen. Second step is actually writing the buffer
+    /// contents.
     WriteBuffer,
 }
 
@@ -210,8 +210,10 @@ pub struct ScreenSplit<'a, S: hil::screen::Screen<'a>> {
     /// The second split screen user, for userspace apps.
     userspace_split: OptionalCell<&'a ScreenSplitSection<'a, S>>,
 
-    /// Whether userspace or the kernel is currently executing a screen command.
-    current_user: OptionalCell<(&'a ScreenSplitSection<'a, S>, SplitScreenState)>,
+    /// What is using the split screen and what state this mux is in.
+    current_user: OptionalCell<(&'a ScreenSplitSection<'a, S>, ScreenSplitState)>,
+
+    /// Simulate interrupt callbacks for setting the frame.
     deferred_call: DeferredCall,
 }
 
@@ -280,21 +282,9 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
             ScreenSplitOperation::WriteSetFrame => {
                 // Just need to set a deferred call since we only write the
                 // frame if we are going to write the screen.
-
-                self.current_user.set((split, SplitScreenState::SetFrame));
+                self.current_user.set((split, ScreenSplitState::SetFrame));
                 self.deferred_call.set();
                 Ok(())
-
-                // let absolute_frame = self.calculate_absolute_frame(split.frame, frame);
-
-                // self.screen
-                //     .set_write_frame(
-                //         absolute_frame.x,
-                //         absolute_frame.y,
-                //         absolute_frame.width,
-                //         absolute_frame.height,
-                //     )
-                //     .inspect(|_| self.current_user.set(user))
             }
             ScreenSplitOperation::WriteBuffer(subslice, continue_write) => {
                 // First we need to set the frame.
@@ -311,14 +301,9 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
                     .inspect(|_| {
                         self.current_user.set((
                             split,
-                            SplitScreenState::WriteSetFrame(subslice, continue_write),
+                            ScreenSplitState::WriteSetFrame(subslice, continue_write),
                         ))
                     })
-
-                // self
-                // .screen
-                // .write(subslice, continue_write)
-                // .inspect(|_| self.current_user.set(user))
             }
         }
     }
@@ -353,50 +338,22 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'
     fn command_complete(&self, _r: Result<(), ErrorCode>) {
         if let Some((current_user, state)) = self.current_user.take() {
             match state {
-                SplitScreenState::WriteSetFrame(subslice, continue_write) => {
-                    self.screen.write(subslice, continue_write).inspect(|_| {
+                ScreenSplitState::WriteSetFrame(subslice, continue_write) => {
+                    let _ = self.screen.write(subslice, continue_write).inspect(|_| {
                         self.current_user
-                            .set((current_user, SplitScreenState::WriteBuffer))
+                            .set((current_user, ScreenSplitState::WriteBuffer))
                     });
                 }
                 _ => {
                     // No other state will trigger this callback.
                 }
             }
-
-            // match current_user {
-            //     ScreenSplitUser::Kernel => {
-            //         if let Some(kernel_user) = self.kernel_split.get() {
-            //             kernel_user.command_complete(r);
-            //         }
-            //     }
-            //     ScreenSplitUser::Userspace => {
-            //         if let Some(userspace_user) = self.userspace_split.get() {
-            //             userspace_user.command_complete(r);
-            //         }
-            //     }
-            // }
         }
-
-        // let _ = self.request_operation();
     }
 
     fn write_complete(&self, data: SubSliceMut<'static, u8>, r: Result<(), ErrorCode>) {
         if let Some((current_user, _state)) = self.current_user.take() {
             current_user.write_complete(data, r);
-
-            // match current_user {
-            //     ScreenSplitUser::Kernel => {
-            //         if let Some(kernel_user) = self.kernel_split.get() {
-            //             kernel_user.write_complete(data, r);
-            //         }
-            //     }
-            //     ScreenSplitUser::Userspace => {
-            //         if let Some(userspace_user) = self.userspace_split.get() {
-            //             userspace_user.write_complete(data, r);
-            //         }
-            //     }
-            // }
         }
 
         let _ = self.request_operation();
@@ -415,23 +372,9 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'
 
 impl<'a, S: hil::screen::Screen<'a>> DeferredCallClient for ScreenSplit<'a, S> {
     fn handle_deferred_call(&self) {
+        // All we have to do is trigger the set frame callback.
         if let Some((current_user, _state)) = self.current_user.take() {
-            // current_user.command_complete(Ok(()));
-
             hil::screen::ScreenClient::command_complete(current_user, Ok(()));
-
-            // match current_user {
-            //     ScreenSplitUser::Kernel => {
-            //         if let Some(kernel_user) = self.kernel_split.get() {
-            //             kernel_user.write_complete(data, r);
-            //         }
-            //     }
-            //     ScreenSplitUser::Userspace => {
-            //         if let Some(userspace_user) = self.userspace_split.get() {
-            //             userspace_user.write_complete(data, r);
-            //         }
-            //     }
-            // }
         }
     }
 
