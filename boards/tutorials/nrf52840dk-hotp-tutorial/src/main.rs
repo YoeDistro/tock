@@ -162,6 +162,7 @@ pub unsafe fn main() {
         capsules_extra::screen_split::ScreenSplit::new(ssd1306_sh1106),
     );
     kernel::hil::screen::Screen::set_client(ssd1306_sh1106, screen_split);
+    kernel::deferred_call::DeferredCallClient::register(screen_split);
 
     let screen_split_userspace = static_init!(
         capsules_extra::screen_split::ScreenSplitSection<'static, ScreenHw>,
@@ -171,7 +172,7 @@ pub unsafe fn main() {
 
     let screen_split_kernel = static_init!(
         capsules_extra::screen_split::ScreenSplitSection<'static, ScreenHw>,
-        capsules_extra::screen_split::ScreenSplitSection::new(screen_split, 0, 32, 128, 32),
+        capsules_extra::screen_split::ScreenSplitSection::new(screen_split, 0, 40, 128, 24),
     );
     screen_split.set_kernel_split(screen_split_kernel);
 
@@ -183,9 +184,9 @@ pub unsafe fn main() {
     )
     .finalize(components::screen_component_static!(1032));
 
-    let screen_on_leds_buffer = static_init!([u8; (32 * 128) / 8], [0; (32 * 128) / 8]);
+    let screen_on_leds_buffer = static_init!([u8; (24 * 128) / 8], [0; (24 * 128) / 8]);
     let screen_on_leds = static_init!(
-        capsules_extra::screen_on_led::ScreenOnLed<'static, ScreenKernel, 4, 128, 32>,
+        capsules_extra::screen_on_led::ScreenOnLed<'static, ScreenKernel, 4, 128, 24>,
         capsules_extra::screen_on_led::ScreenOnLed::new(screen_split_kernel, screen_on_leds_buffer)
     );
     kernel::hil::screen::Screen::set_client(screen_split_kernel, screen_on_leds);
