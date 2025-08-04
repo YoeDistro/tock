@@ -155,6 +155,8 @@ pub unsafe fn main() {
     #[cfg(feature = "screen_sh1106")]
     type ScreenHw = components::sh1106::Sh1106ComponentType<nrf52840::i2c::TWI<'static>>;
 
+    type ScreenKernel = capsules_extra::screen_split::ScreenSplitSection<'static, ScreenHw>;
+
     let screen_split = static_init!(
         capsules_extra::screen_split::ScreenSplit<'static, ScreenHw>,
         capsules_extra::screen_split::ScreenSplit::new(ssd1306_sh1106),
@@ -167,6 +169,12 @@ pub unsafe fn main() {
     );
     screen_split.set_userspace_split(screen_split_userspace);
 
+    let screen_split_kernel = static_init!(
+        capsules_extra::screen_split::ScreenSplitSection<'static, ScreenHw>,
+        capsules_extra::screen_split::ScreenSplitSection::new(screen_split, 0, 32, 128, 32),
+    );
+    screen_split.set_kernel_split(screen_split_kernel);
+
     let screen = components::screen::ScreenComponent::new(
         board_kernel,
         capsules_extra::screen::DRIVER_NUM,
@@ -174,6 +182,13 @@ pub unsafe fn main() {
         None,
     )
     .finalize(components::screen_component_static!(1032));
+
+    let screen_on_leds_buffer = static_init!([u8; (32 * 128) / 8], [0; (32 * 128) / 8]);
+    let screen_on_leds = static_init!(
+        capsules_extra::screen_on_led::ScreenOnLed<'static, ScreenKernel, 4, 128, 32>,
+        capsules_extra::screen_on_led::ScreenOnLed::new(screen_split_kernel, screen_on_leds_buffer)
+    );
+    kernel::hil::screen::Screen::set_client(screen_split_kernel, screen_on_leds);
 
     ssd1306_sh1106.init_screen();
 

@@ -88,6 +88,7 @@ pub mod read_only_state;
 pub mod rf233;
 pub mod rf233_const;
 pub mod screen;
+pub mod screen_on_led;
 pub mod screen_shared;
 pub mod screen_split;
 pub mod sdcard;
