@@ -994,6 +994,9 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
     ) {
         self.req_resp_buffers.replace((req_buffer, resp_buffer));
 
+        // Reset the pending draw area:
+        self.pending_draw_area.set(Rect::empty());
+
         // If this was in response to a draw command, issue a callback:
         match self.state.get() {
             VirtIOGPUState::DrawResourceFlush => {
