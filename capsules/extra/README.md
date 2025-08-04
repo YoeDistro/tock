@@ -177,6 +177,7 @@ Other capsules that implement reusable logic.
 - **[Log Storage](src/log.rs)**: Log storage abstraction on flash devices.
 - **[Nonvolatile to Pages](src/nonvolatile_to_pages.rs)**: Map arbitrary reads
   and writes to flash pages.
+- **[Screen On Led](src/screen_on_led.rs)**: Draw fake LEDs on the screen.
 - **[SHA256](src/sha256.rs)**: SHA256 software hash.
 - **[SignatureVerifyInMemoryKeys](src/signature_verify_in_memory_keys.rs)**:
   Signature verification with multiple in-memory keys.
