@@ -95,7 +95,8 @@ run-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	@echo
 	$(QEMU_BASE_CMDLINE) \
 	  -bios $< \
-	  -device virtio-gpu-device
+	  -device virtio-gpu-device \
+    -serial stdio
 
 # Same as `run`, but load an application specified by $(APP) into the respective
 # memory location.
@@ -127,4 +128,5 @@ run-app-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	$(QEMU_BASE_CMDLINE) \
 	  -bios $< \
 	  -device loader,file=$(APP),addr=0x80100000 \
-	  -device virtio-gpu-device
+	  -device virtio-gpu-device \
+    -serial stdio
