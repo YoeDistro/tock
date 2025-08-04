@@ -10,6 +10,8 @@
 //! screen config settings (brightness, invert) as those operations affect the
 //! entire screen.
 
+use core::cells::Cell;
+use kernel::deferred_call::{DeferredCall, DeferredCallClient};
 use kernel::hil;
 use kernel::utilities::cells::OptionalCell;
 use kernel::utilities::leasable_buffer::SubSliceMut;
@@ -52,6 +54,7 @@ pub struct ScreenSplitSection<'a, S: hil::screen::Screen<'a>> {
     screen_split: &'a ScreenSplit<'a, S>,
     /// The frame within the entire screen this split section has access to.
     frame: Frame,
+    write_frame: Cell<Frame>,
     /// What operation this section would like to do.[`ScreenSplitSection`] sets
     /// its intended operation here and then asks the [`ScreenSplit`] to
     /// execute it.
@@ -78,6 +81,7 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplitSection<'a, S> {
         Self {
             screen_split,
             frame,
+            write_frame: Cell::new(frame),
             pending: OptionalCell::empty(),
             client: OptionalCell::empty(),
         }
@@ -117,6 +121,8 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::Screen<'a> for ScreenSplitSect
                 width,
                 height,
             };
+
+            self.write_frame.set(frame);
 
             // Just mark this operation as intended and then ask the shared
             // split manager to execute it.
@@ -194,6 +200,7 @@ pub struct ScreenSplit<'a, S: hil::screen::Screen<'a>> {
 
     /// Whether userspace or the kernel is currently executing a screen command.
     current_user: OptionalCell<ScreenSplitUser>,
+    deferred_call: DeferredCall,
 }
 
 impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
@@ -203,6 +210,7 @@ impl<'a, S: hil::screen::Screen<'a>> ScreenSplit<'a, S> {
             current_user: OptionalCell::empty(),
             kernel_split: OptionalCell::empty(),
             userspace_split: OptionalCell::empty(),
+            deferred_call: DeferredCall::new(),
         }
     }
 
@@ -350,5 +358,13 @@ impl<'a, S: hil::screen::Screen<'a>> hil::screen::ScreenClient for ScreenSplit<'
         if let Some(userspace_user) = self.userspace_split.get() {
             userspace_user.screen_is_ready();
         }
+    }
+}
+
+impl<'a, S: hil::screen::Screen<'a>> DeferredCallClient for ScreenSplit<'a, S> {
+    fn handle_deferred_call(&self) {}
+
+    fn register(&'static self) {
+        self.deferred_call.register(self);
     }
 }
