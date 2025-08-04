@@ -25,6 +25,18 @@ pub mod io;
 
 type ScreenDriver = components::screen::ScreenComponentType;
 
+type ScreenHw = capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage<
+    'static,
+    qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>,
+>;
+
+type ScreenSplitUser = components::screen::ScreenSplitUserComponentType<ScreenHw>;
+
+type ScreenOnLed = components::screen_on::ScreenOnLedComponentType<ScreenSplitUser, 4, 128, 24>;
+type ScreenOnLedSingle = capsules_extra::screen_on_led::ScreenOnLedSingle<'static, ScreenOnLed>;
+
+type Led = capsules_core::led::LedDriver<'static, ScreenOnLedSingle, 4>;
+
 pub const NUM_PROCS: usize = 4;
 
 /// Static variables used by io.rs.
@@ -84,7 +96,7 @@ struct QemuRv32VirtPlatform {
             qemu_rv32_virt_chip::virtio::devices::virtio_net::VirtIONet<'static>,
         >,
     >,
-    virtio_gpu_screen: Option<&'static ScreenDriver>,
+    virtio_gpu_screen: Option<(&'static ScreenDriver, &'static Led)>,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -112,8 +124,15 @@ impl SyscallDriverLookup for QemuRv32VirtPlatform {
                 }
             }
             capsules_extra::screen::DRIVER_NUM => {
-                if let Some(screen_driver) = self.virtio_gpu_screen {
+                if let Some((screen_driver, _led_driver)) = self.virtio_gpu_screen {
                     f(Some(screen_driver))
+                } else {
+                    f(None)
+                }
+            }
+            capsules_core::led::DRIVER_NUM => {
+                if let Some((_screen_driver, led_driver)) = self.virtio_gpu_screen {
+                    f(Some(led_driver))
                 } else {
                     f(None)
                 }
@@ -335,10 +354,11 @@ unsafe fn start() -> (
 
     // If there is a VirtIO EntropySource present, use the appropriate VirtIORng
     // driver and expose it to userspace though the RngDriver
-    let virtio_gpu_screen: Option<
+    let virtio_gpu_screen: Option<(
         // &'static capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage<'static, qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>>,
         &'static capsules_extra::screen::Screen<'static>,
-    > = if let Some(gpu_idx) = virtio_gpu_idx {
+        &'static Led,
+    )> = if let Some(gpu_idx) = virtio_gpu_idx {
         use kernel::hil::screen::Screen;
 
         use qemu_rv32_virt_chip::virtio::devices::virtio_gpu::{
@@ -422,17 +442,44 @@ unsafe fn start() -> (
         kernel::deferred_call::DeferredCallClient::register(screen_argb_8888_to_mono_8bit_page);
         gpu.set_client(screen_argb_8888_to_mono_8bit_page);
 
+        let screen_split =
+            components::screen::ScreenSplitMuxComponent::new(screen_argb_8888_to_mono_8bit_page)
+                .finalize(components::screen_split_mux_component_static!(ScreenHw));
+
+        let screen_split_userspace =
+            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 0, 128, 32)
+                .finalize(components::screen_split_user_component_static!(ScreenHw));
+
+        let screen_split_kernel =
+            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 32, 128, 24)
+                .finalize(components::screen_split_user_component_static!(ScreenHw));
+
         let screen = components::screen::ScreenComponent::new(
             board_kernel,
             capsules_extra::screen::DRIVER_NUM,
-            screen_argb_8888_to_mono_8bit_page,
+            screen_split_userspace,
             None,
         )
         .finalize(components::screen_component_static!(1032));
 
-        gpu.initialize();
+        let screen_on_leds =
+            components::screen_on::ScreenOnLedComponent::new(screen_split_kernel).finalize(
+                components::screen_on_led_component_static!(ScreenSplitUser, 4, 128, 24),
+            );
 
-        Some(screen)
+        let led =
+            components::led::LedsComponent::new().finalize(components::led_component_static!(
+                ScreenOnLedSingle,
+                capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 0),
+                capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 1),
+                capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 2),
+                capsules_extra::screen_on_led::ScreenOnLedSingle::new(screen_on_leds, 3),
+            ));
+
+        gpu.initialize();
+        // screen_on_leds.initialize_leds();
+
+        Some((screen, led))
     } else {
         // No VirtIO GPU device discovered
         None
