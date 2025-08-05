@@ -1086,11 +1086,11 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             resource_id: 1,
             padding: 0,
         };
-        kernel::debug!(
-            "Transfer to host {:?}, {:?}",
-            transfer_rect,
-            write_buffer_offset
-        );
+        // kernel::debug!(
+        //     "Transfer to host {:?}, {:?}",
+        //     transfer_rect,
+        //     write_buffer_offset
+        // );
         cmd_transfer_to_host_2d_req.write_to_byte_iter(&mut req_buffer.iter_mut());
 
         let mut buffer_chain = [
@@ -1426,7 +1426,7 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
             return Err(ErrorCode::BUSY);
         };
 
-        kernel::debug!("set_write_frame({}, {}, {}, {})", x, y, width, height);
+        // kernel::debug!("set_write_frame({}, {}, {}, {})", x, y, width, height);
 
         // We first convert the coordinates to u32s:
         let x: u32 = x.try_into().map_err(|_| ErrorCode::INVAL)?;
@@ -1479,7 +1479,7 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
             return Err(ErrorCode::BUSY);
         };
 
-        kernel::debug!("write(len = {}, {:?})", buffer.len(), continue_write);
+        // kernel::debug!("write(len = {}, {:?})", buffer.len(), continue_write);
 
         // If `continue_write` is false, we must reset `x_off` and
         // `y_off`. Otherwise we start at the stored offset.
