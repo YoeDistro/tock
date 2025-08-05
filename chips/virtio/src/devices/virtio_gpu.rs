@@ -3,12 +3,10 @@
 // Copyright Tock Contributors 2022.
 
 use core::cell::Cell;
+use core::ops::Range;
 
 use kernel::deferred_call::{DeferredCall, DeferredCallClient};
-use kernel::hil::screen::{
-    Dims as ScreenDims, InMemoryFrameBufferScreen, Rect as ScreenRect, Screen, ScreenClient,
-    ScreenPixelFormat, ScreenRotation,
-};
+use kernel::hil::screen::{Screen, ScreenClient, ScreenPixelFormat, ScreenRotation};
 use kernel::utilities::cells::{OptionalCell, TakeCell};
 use kernel::utilities::leasable_buffer::SubSliceMut;
 use kernel::ErrorCode;
@@ -146,38 +144,38 @@ impl Rect {
         self.width == 0 && self.height == 0
     }
 
-    pub fn extend(&self, other: Rect) -> Rect {
-        use core::cmp::{max, min};
+    // pub fn extend(&self, other: Rect) -> Rect {
+    //     use core::cmp::{max, min};
 
-        // If either one of the `Rect`s is empty, simply return the other:
-        if self.is_empty() {
-            other
-        } else if other.is_empty() {
-            *self
-        } else {
-            // Determine the "x1" for both self and other, so that we can calculate
-            // the final width based on the distance of the larger of the two "x0"s
-            // and the larger of the two "x1"s:
-            let self_x1 = self.x.saturating_add(self.width);
-            let other_x1 = other.x.saturating_add(other.width);
+    //     // If either one of the `Rect`s is empty, simply return the other:
+    //     if self.is_empty() {
+    //         other
+    //     } else if other.is_empty() {
+    //         *self
+    //     } else {
+    //         // Determine the "x1" for both self and other, so that we can calculate
+    //         // the final width based on the distance of the larger of the two "x0"s
+    //         // and the larger of the two "x1"s:
+    //         let self_x1 = self.x.saturating_add(self.width);
+    //         let other_x1 = other.x.saturating_add(other.width);
 
-            // Same for "y1"s:
-            let self_y1 = self.y.saturating_add(self.height);
-            let other_y1 = other.y.saturating_add(other.height);
+    //         // Same for "y1"s:
+    //         let self_y1 = self.y.saturating_add(self.height);
+    //         let other_y1 = other.y.saturating_add(other.height);
 
-            // Now, build the rect:
-            let new_x0 = min(self.x, other.x);
-            let new_x1 = max(self_x1, other_x1);
-            let new_y0 = min(self.y, other.y);
-            let new_y1 = max(self_y1, other_y1);
-            Rect {
-                x: new_x0,
-                y: new_y0,
-                width: new_x1.saturating_sub(new_x0),
-                height: new_y1.saturating_sub(new_y0),
-            }
-        }
-    }
+    //         // Now, build the rect:
+    //         let new_x0 = min(self.x, other.x);
+    //         let new_x1 = max(self_x1, other_x1);
+    //         let new_y0 = min(self.y, other.y);
+    //         let new_y1 = max(self_y1, other_y1);
+    //         Rect {
+    //             x: new_x0,
+    //             y: new_y0,
+    //             width: new_x1.saturating_sub(new_x0),
+    //             height: new_y1.saturating_sub(new_y0),
+    //         }
+    //     }
+    // }
 
     fn write_to_byte_iter<'a>(&self, dst: &mut impl Iterator<Item = &'a mut u8>) {
         // Write out fields to iterator.
@@ -326,6 +324,47 @@ impl VirtIOGPUResp for ResourceAttachBackingResp {
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
+struct ResourceDetachBackingReq {
+    pub ctrl_header: CtrlHeader,
+    pub resource_id: u32,
+    pub padding: u32,
+}
+
+impl VirtIOGPUReq for ResourceDetachBackingReq {
+    const ENCODED_SIZE: usize = core::mem::size_of::<Self>();
+    const CTRL_TYPE: CtrlType = CtrlType::CmdResourceDetachBacking;
+    type ExpectedResponse = ResourceDetachBackingResp;
+
+    fn write_to_byte_iter<'a>(&self, dst: &mut impl Iterator<Item = &'a mut u8>) {
+        // Write out fields to iterator.
+        //
+        // This struct doesn't need any padding bytes.
+        self.ctrl_header.write_to_byte_iter(dst);
+        copy_to_iter(dst, u32::to_le_bytes(self.resource_id).into_iter());
+        copy_to_iter(dst, u32::to_le_bytes(self.padding).into_iter());
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+struct ResourceDetachBackingResp {
+    pub ctrl_header: CtrlHeader,
+}
+
+impl VirtIOGPUResp for ResourceDetachBackingResp {
+    const ENCODED_SIZE: usize = core::mem::size_of::<Self>();
+    const EXPECTED_CTRL_TYPE: CtrlType = CtrlType::RespOkNoData;
+
+    fn from_byte_iter_post_checked_ctrl_header(
+        ctrl_header: CtrlHeader,
+        _src: &mut impl Iterator<Item = u8>,
+    ) -> Result<Self, ErrorCode> {
+        Ok(ResourceDetachBackingResp { ctrl_header })
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
 struct SetScanoutReq {
     pub ctrl_header: CtrlHeader,
     pub r: Rect,
@@ -465,6 +504,7 @@ pub const MAX_REQ_SIZE: usize = max(&[
     SetScanoutReq::ENCODED_SIZE,
     TransferToHost2DReq::ENCODED_SIZE,
     ResourceFlushReq::ENCODED_SIZE,
+    ResourceDetachBackingReq::ENCODED_SIZE,
 ]);
 
 pub const MAX_RESP_SIZE: usize = max(&[
@@ -472,6 +512,7 @@ pub const MAX_RESP_SIZE: usize = max(&[
     ResourceAttachBackingResp::ENCODED_SIZE,
     SetScanoutResp::ENCODED_SIZE,
     ResourceFlushResp::ENCODED_SIZE,
+    ResourceDetachBackingResp::ENCODED_SIZE,
 ]);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -579,24 +620,19 @@ enum VideoFormat {
     R8G8B8X8Unorm = 134,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum DrawMode {
-    Write,
-    WriteToFrameBuffer,
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum VirtIOGPUState {
     Uninitialized,
     InitializingResourceCreate2D,
     InitializingResourceAttachBacking,
     InitializingSetScanout,
-    InitializingTransferToHost2D,
-    InitializingResourceFlush,
+    InitializingResourceDetachBacking,
     Idle,
     SettingWriteFrame,
-    DrawTransferToHost2D(DrawMode),
-    DrawResourceFlush(DrawMode),
+    DrawResourceAttachBacking,
+    DrawTransferToHost2D,
+    DrawResourceFlush,
+    DrawResourceDetachBacking,
 }
 
 #[derive(Copy, Clone)]
@@ -648,14 +684,9 @@ pub struct VirtIOGPU<'a, 'b> {
     control_queue: &'a SplitVirtqueue<'a, 'b, 2>,
     req_resp_buffers: OptionalCell<(&'b mut [u8; MAX_REQ_SIZE], &'b mut [u8; MAX_RESP_SIZE])>,
 
-    // Frame buffer and output parameters:
-    frame_buffer: TakeCell<'a, [u8]>,
+    // Video output parameters:
     width: u32,
     height: u32,
-
-    // Pending output update state:
-    current_flush_area: Cell<Rect>,
-    pending_draw_area: Cell<Rect>,
 
     // Set up by `Screen::set_write_frame`, and then later written to with a
     // call to `Screen::write`. It contains the `Rect` being written to, and the
@@ -663,13 +694,29 @@ pub struct VirtIOGPU<'a, 'b> {
     current_draw_area: Cell<(
         // Draw area:
         Rect,
-        // Current draw offset:
+        // Current draw offset, relative to the draw area itself:
         (u32, u32),
-        // Optimization -- number of pixels left in the draw area, starting from
-        // the offset:
+        // Optimization -- count the number of pixels remaining undrawn:
         usize,
     )>,
-    client_write_buffer: OptionalCell<SubSliceMut<'static, u8>>,
+
+    // The client provides us a subslice, but we need to place a `&'static mut`
+    // buffer into the VirtQueue. We store the client's bounds here. We can't
+    // use a `Range<usize>` as it isn't `Copy`, and so have to store
+    // `rnage.start` and `range.end` instead.
+    write_buffer_subslice_range: Cell<(usize, usize)>,
+
+    // We can only draw rectangles, but the client can ask us to do arbitrarily
+    // sized partial writes. This means that sometimes we might need to perform
+    // multiple writes in response to a single client request. This stores the
+    // offset into the client's buffer we've processed so far:
+    write_buffer_offset: Cell<usize>,
+
+    // Slot for the client's write buffer, while it's attached to the GPU:
+    write_buffer: TakeCell<'static, [u8]>,
+
+    // Current rect being transfered to the host:
+    current_transfer_area_pixels: Cell<(Rect, usize)>,
 }
 
 impl<'a, 'b> VirtIOGPU<'a, 'b> {
@@ -677,19 +724,11 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         control_queue: &'a SplitVirtqueue<'a, 'b, 2>,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
-        frame_buffer: &'a mut [u8],
         width: usize,
         height: usize,
     ) -> Result<VirtIOGPU<'a, 'b>, ErrorCode> {
         let width: u32 = width.try_into().map_err(|_| ErrorCode::SIZE)?;
         let height: u32 = height.try_into().map_err(|_| ErrorCode::SIZE)?;
-        let pixel_data_size = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|p| p.checked_mul(PIXEL_STRIDE))
-            .ok_or(ErrorCode::SIZE)?;
-        if pixel_data_size != frame_buffer.len() {
-            return Err(ErrorCode::SIZE);
-        }
 
         Ok(VirtIOGPU {
             client: OptionalCell::empty(),
@@ -700,14 +739,14 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             control_queue,
             req_resp_buffers: OptionalCell::new((req_buffer, resp_buffer)),
 
-            frame_buffer: TakeCell::new(frame_buffer),
             width,
             height,
 
-            current_flush_area: Cell::new(Rect::empty()),
-            pending_draw_area: Cell::new(Rect::empty()),
             current_draw_area: Cell::new((Rect::empty(), (0, 0), 0)),
-            client_write_buffer: OptionalCell::empty(),
+            write_buffer_subslice_range: Cell::new((0, 0)),
+            write_buffer_offset: Cell::new(0),
+            write_buffer: TakeCell::empty(),
+            current_transfer_area_pixels: Cell::new((Rect::empty(), 0)),
         })
     }
 
@@ -723,14 +762,6 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         // Take the request and response buffers. They must be available during
         // initialization:
         let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
-
-        // Mark the entire frame buffer as to be re-drawn:
-        self.pending_draw_area.set(Rect {
-            x: 0,
-            y: 0,
-            width: self.width,
-            height: self.height,
-        });
 
         // Step 1: Create host resource
         let cmd_resource_create_2d_req = ResourceCreate2DReq {
@@ -777,17 +808,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
     ) {
         // Step 2: Attach backing memory (our framebuffer)
 
-        // We first determine the address of our framebuffer. Even
-        // though it lives in a TakeCell and we can take it out and
-        // put it back in, that only affects the reference, but no the
-        // address of the underlying buffer. That stays constant for
-        // as long as this driver instance lives:
-        let (frame_buffer_addr, frame_buffer_length) = self
-            .frame_buffer
-            .map(|fb| (fb.as_mut_ptr(), fb.len()))
-            .unwrap();
-
-        // Now, tell inform the device of this buffer:
+        // At first, we attach a zero-sized dummy buffer:
         const ENTRIES: usize = 1;
         let cmd_resource_attach_backing_req: ResourceAttachBackingReq<{ ENTRIES }> =
             ResourceAttachBackingReq {
@@ -801,8 +822,9 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 resource_id: 1,
                 nr_entries: ENTRIES as u32,
                 entries: [MemEntry {
-                    addr: frame_buffer_addr as u64,
-                    length: frame_buffer_length as u32,
+                    // TODO: use dummy buffer!
+                    addr: 1,
+                    length: 1,
                     padding: 0,
                 }],
             };
@@ -879,42 +901,178 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
-        // Initialization done! Return the buffers, first of all:
+        // Step 4: Detach resource
+        let cmd_resource_detach_backing_req = ResourceDetachBackingReq {
+            ctrl_header: CtrlHeader {
+                ctrl_type: ResourceDetachBackingReq::CTRL_TYPE,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0,
+            },
+            resource_id: 1,
+            padding: 0,
+        };
+        cmd_resource_detach_backing_req.write_to_byte_iter(&mut req_buffer.iter_mut());
+
+        let mut buffer_chain = [
+            Some(VirtqueueBuffer {
+                buf: req_buffer,
+                len: ResourceDetachBackingReq::ENCODED_SIZE,
+                device_writeable: false,
+            }),
+            Some(VirtqueueBuffer {
+                buf: resp_buffer,
+                len: ResourceDetachBackingResp::ENCODED_SIZE,
+                device_writeable: true,
+            }),
+        ];
+        self.control_queue
+            .provide_buffer_chain(&mut buffer_chain)
+            .unwrap();
+
+        self.state
+            .set(VirtIOGPUState::InitializingResourceDetachBacking);
+    }
+
+    fn initialize_resource_detach_backing_resp(
+        &self,
+        _resp: ResourceDetachBackingResp,
+        req_buffer: &'b mut [u8; MAX_REQ_SIZE],
+        resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
+    ) {
+        // Initialization done! Return the buffers:
         self.req_resp_buffers.replace((req_buffer, resp_buffer));
 
-        // As one final step, we draw the contents of the framebuffer that was
-        // passed to us initially. We use the common `draw_frame_buffer_int`
-        // method, but setting the appropriate state, to distinguish from a
-        // regular draw command:
-        self.state.set(VirtIOGPUState::InitializingTransferToHost2D);
-        self.draw_frame_buffer_int();
+        // Set the device state:
+        self.state.set(VirtIOGPUState::Idle);
+
+        // Then issue the appropriate callback:
+        self.client.map(|c| c.screen_is_ready());
     }
 
-    fn draw_frame_buffer(&self, mode: DrawMode) {
-        // Call the `draw_frame_buffer_int` shared with the initialization
-        // routine, but setting a `DrawTransferToHost2D` state instead, which
-        // communicates that we're not in the initialization routine any more:
-        self.state.set(VirtIOGPUState::DrawTransferToHost2D(mode));
-        self.draw_frame_buffer_int();
-    }
+    fn continue_draw_transfer_to_host_2d(
+        &self,
+        req_buffer: &'b mut [u8; MAX_REQ_SIZE],
+        resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
+    ) {
+        // Now, the `TRANSFER_TO_HOST_2D` command can only copy rectangles.
+        // However, when we performed a partial write (let's say of just one
+        // pixel), then the current x offset will not perfectly line up with the
+        // left boundary of the overall draw rectangle. Similarly, when the
+        // buffer doesn't perfectly fill up the last row of pixels, we can't
+        // draw them together with the previous rows of the rectangle. Thus, a
+        // single `write` call may result in at most three underlying
+        // `TRANSFER_TO_HOST_2D` commands.
+        //
+        // At this stage, we have the `write_buffer_subslice_range` set to the
+        // client's range, `write_buffer_offset` contains the offset into this
+        // subslice range that we've already drawn, and `current_draw_area` has
+        // the correct offset into the rectangle on the host.
+        let (draw_rect, current_draw_offset, remaining_pixels) = self.current_draw_area.get();
+        let (write_buffer_subslice_range_start, write_buffer_subslice_range_end) =
+            self.write_buffer_subslice_range.get();
+        let write_buffer_subslice_range = Range {
+            start: write_buffer_subslice_range_start,
+            end: write_buffer_subslice_range_end,
+        };
+        let write_buffer_offset = self.write_buffer_offset.get();
 
-    fn draw_frame_buffer_int(&self) {
-        // Make sure we've entered the correct state before calling this method:
-        match self.state.get() {
-            VirtIOGPUState::DrawTransferToHost2D(_mode) => (),
-            VirtIOGPUState::InitializingTransferToHost2D => (),
-            s => panic!("Called draw_frame_buffer_int in invalid state {:?}", s),
+        // Compute the remaining bytes left in the client-supplied buffer:
+        let write_buffer_remaining_bytes = write_buffer_subslice_range
+            .len()
+            .checked_sub(write_buffer_offset)
+            .unwrap();
+        assert!(write_buffer_remaining_bytes % PIXEL_STRIDE == 0);
+        let write_buffer_remaining_pixels = write_buffer_remaining_bytes / PIXEL_STRIDE;
+        assert!(write_buffer_remaining_pixels <= remaining_pixels);
+
+        // Check whether the current draw offset within the rectangle has an `x`
+        // coordinate of zero. That means we can copy one or more full rows, or
+        // the last partial row of the draw area:
+        let transfer_pixels = if draw_rect.is_empty() {
+            // Short-circuit an empty draw_rect, to avoid divide by zero
+            // areas when using `rect.width` or `rect.height` as a divisor:
+            0
+        } else if current_draw_offset.0 == 0 {
+            // Okay, we can start drawing the full rectangle. We want to try
+            // drawing any full rows, if there are any left, and if not the
+            // last partial row:
+            assert!(current_draw_offset.1 <= draw_rect.height || remaining_pixels == 0);
+            if current_draw_offset.1 >= draw_rect.height {
+                // Just one row left to draw, and we start from `x ==
+                // 0`. This means we can just copy however much more data
+                // the client buffer holds. We've previously checked that
+                // the client buffer fully fits into the draw area, but
+                // re-check that assertion here:
+                assert!(draw_rect.width as usize >= write_buffer_remaining_pixels);
+                write_buffer_remaining_pixels
+            } else {
+                // There is more than one row left to copy, and we start
+                // from `x == 0`. If the client buffer lines up with the end
+                // of a row, we can copy them as a single
+                // rectangle. Otherwise, we need two copies:
+                write_buffer_remaining_pixels / (draw_rect.width as usize)
+                    * (draw_rect.width as usize)
+            }
+        } else {
+            // Our current draw offset is not zero. This means we must copy
+            // the current row, and then potentially any subsequent
+            // rows. Determine how much to copy based on the lower of the
+            // remaining data in the slice, or the remaining row width:
+            let remaining_row_width = draw_rect.width.checked_sub(current_draw_offset.0).unwrap();
+            core::cmp::min(remaining_row_width as usize, write_buffer_remaining_pixels)
+        };
+
+        // If we've got nothing left to copy, great! We're done drawing, but
+        // still need to detach the resource:
+        if transfer_pixels == 0 {
+            let cmd_resource_detach_backing_req = ResourceDetachBackingReq {
+                ctrl_header: CtrlHeader {
+                    ctrl_type: ResourceDetachBackingReq::CTRL_TYPE,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                resource_id: 1,
+                padding: 0,
+            };
+            cmd_resource_detach_backing_req.write_to_byte_iter(&mut req_buffer.iter_mut());
+
+            let mut buffer_chain = [
+                Some(VirtqueueBuffer {
+                    buf: req_buffer,
+                    len: ResourceDetachBackingReq::ENCODED_SIZE,
+                    device_writeable: false,
+                }),
+                Some(VirtqueueBuffer {
+                    buf: resp_buffer,
+                    len: ResourceDetachBackingResp::ENCODED_SIZE,
+                    device_writeable: true,
+                }),
+            ];
+            self.control_queue
+                .provide_buffer_chain(&mut buffer_chain)
+                .unwrap();
+
+            self.state.set(VirtIOGPUState::DrawResourceDetachBacking);
+
+            return;
         }
 
-        // Transfer the `pending_draw_area` into the `current_flush_area`, and
-        // reset the `pending_draw_area`. This allows concurrent calls to
-        // `write_to_frame_buffer` to set up new redraw areas while we're
-        // performing the flush:
-        self.current_flush_area.set(self.pending_draw_area.get());
-        self.pending_draw_area.set(Rect::empty());
+        // Otherwise, build the transfer rect from `transfer_pixels`,
+        // `draw_rect` and the current draw offset:
+        let transfer_rect = Rect {
+            x: draw_rect.x.checked_add(current_draw_offset.0).unwrap(),
+            y: draw_rect.y.checked_add(current_draw_offset.1).unwrap(),
+            width: core::cmp::min(transfer_pixels, draw_rect.width as usize) as u32,
+            height: transfer_pixels.div_ceil(draw_rect.width as usize) as u32,
+        };
+        self.current_transfer_area_pixels
+            .set((transfer_rect, transfer_pixels));
 
-        let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
-
+        // Attach write buffer
         let cmd_transfer_to_host_2d_req = TransferToHost2DReq {
             ctrl_header: CtrlHeader {
                 ctrl_type: TransferToHost2DReq::CTRL_TYPE,
@@ -923,11 +1081,16 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: self.current_flush_area.get(),
-            offset: 0,
+            r: transfer_rect,
+            offset: write_buffer_offset as u64,
             resource_id: 1,
             padding: 0,
         };
+        kernel::debug!(
+            "Transfer to host {:?}, {:?}",
+            transfer_rect,
+            write_buffer_offset
+        );
         cmd_transfer_to_host_2d_req.write_to_byte_iter(&mut req_buffer.iter_mut());
 
         let mut buffer_chain = [
@@ -945,16 +1108,17 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
         self.control_queue
             .provide_buffer_chain(&mut buffer_chain)
             .unwrap();
+
+        self.state.set(VirtIOGPUState::DrawTransferToHost2D);
     }
 
-    fn draw_transfer_to_host_2d_resp(
+    fn continue_draw_resource_flush(
         &self,
-        _resp: TransferToHost2DResp,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
-        // Now draw the contents of the framebuffer that was passed to us
-        // initially:
+        let (current_transfer_area, _) = self.current_transfer_area_pixels.get();
+
         let cmd_resource_flush_req = ResourceFlushReq {
             ctrl_header: CtrlHeader {
                 ctrl_type: ResourceFlushReq::CTRL_TYPE,
@@ -963,7 +1127,7 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
                 ctx_id: 0,
                 padding: 0,
             },
-            r: self.current_flush_area.get(),
+            r: current_transfer_area,
             resource_id: 1,
             padding: 0,
         };
@@ -985,58 +1149,81 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             .provide_buffer_chain(&mut buffer_chain)
             .unwrap();
 
-        match self.state.get() {
-            VirtIOGPUState::InitializingTransferToHost2D => {
-                self.state.set(VirtIOGPUState::InitializingResourceFlush);
-            }
-            VirtIOGPUState::DrawTransferToHost2D(mode) => {
-                self.state.set(VirtIOGPUState::DrawResourceFlush(mode));
-            }
-            s => panic!(
-                "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
-                s
-            ),
-        }
+        self.state.set(VirtIOGPUState::DrawResourceFlush);
     }
 
-    fn draw_resource_flush_resp(
+    fn continue_draw_resource_flushed(
         &self,
-        _resp: ResourceFlushResp,
+        req_buffer: &'b mut [u8; MAX_REQ_SIZE],
+        resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
+    ) {
+        // We've finished one write command, but there might be more to
+        // come. Increment `current_draw_offset` and `write_buffer_offset`, and
+        // decrement `remaining_pixels` accordingly.
+        let (draw_rect, mut current_draw_offset, mut remaining_pixels) =
+            self.current_draw_area.get();
+        let mut write_buffer_offset = self.write_buffer_offset.get();
+
+        // This is what we've just drawn:
+        let (drawn_area, drawn_pixels) = self.current_transfer_area_pixels.get();
+
+        // We always draw left -> right, top -> bottom, so we can simply set the
+        // current `x` and `y` coordinates to the bottom-right most coordinates
+        // we've just drawn (while wrapping and carrying the one):
+        current_draw_offset.0 = drawn_area
+            .x
+            .checked_add(drawn_area.width)
+            .and_then(|drawn_x1| drawn_x1.checked_sub(draw_rect.x))
+            .unwrap();
+        current_draw_offset.1 = drawn_area
+            .y
+            .checked_add(drawn_area.height)
+            .and_then(|drawn_y1| drawn_y1.checked_sub(draw_rect.y))
+            .unwrap();
+
+        // Wrap to the next line when we've finished writing the column of our
+        // last row drawn:
+        assert!(current_draw_offset.0 <= draw_rect.width);
+        if current_draw_offset.0 == draw_rect.width {
+            current_draw_offset.0 = 0;
+            current_draw_offset.1 = current_draw_offset.1.checked_add(1).unwrap();
+        }
+
+        // Subtract our drawn_pixels from `remaining_pixels`:
+        assert!(remaining_pixels >= drawn_pixels);
+        remaining_pixels -= drawn_pixels;
+
+        // Add our drawn pixels * PIXEL_STRIDE to the buffer offset:
+        write_buffer_offset += drawn_pixels.checked_mul(PIXEL_STRIDE).unwrap();
+
+        // Write all of this back:
+        self.current_draw_area
+            .set((draw_rect, current_draw_offset, remaining_pixels));
+        self.write_buffer_offset.set(write_buffer_offset);
+
+        // And continue drawing:
+        self.continue_draw_transfer_to_host_2d(req_buffer, resp_buffer);
+    }
+
+    fn continue_draw_resource_detached_backing(
+        &self,
         req_buffer: &'b mut [u8; MAX_REQ_SIZE],
         resp_buffer: &'b mut [u8; MAX_RESP_SIZE],
     ) {
         self.req_resp_buffers.replace((req_buffer, resp_buffer));
+        self.state.set(VirtIOGPUState::Idle);
 
-        // Reset the flush area:
-        self.current_flush_area.set(Rect::empty());
+        let (write_buffer_subslice_range_start, write_buffer_subslice_range_end) =
+            self.write_buffer_subslice_range.get();
+        let write_buffer_subslice_range = Range {
+            start: write_buffer_subslice_range_start,
+            end: write_buffer_subslice_range_end,
+        };
 
-        // Issue the appropriate callback:
-        match self.state.get() {
-            VirtIOGPUState::DrawResourceFlush(DrawMode::Write) => {
-                self.client
-                    .map(|c| c.write_complete(self.client_write_buffer.take().unwrap(), Ok(())));
-            }
-            VirtIOGPUState::DrawResourceFlush(DrawMode::WriteToFrameBuffer) => {
-                self.client.map(|c| c.command_complete(Ok(())));
-            }
-            VirtIOGPUState::InitializingResourceFlush => {
-                self.client.map(|c| c.screen_is_ready());
-            }
-            s => panic!(
-                "Called draw_transfer_to_host_2d_resp in unexpected state {:?}",
-                s
-            ),
-        }
+        let mut subslice = SubSliceMut::new(self.write_buffer.take().unwrap());
+        subslice.slice(write_buffer_subslice_range);
 
-        // Check if we have received more data to draw in the meantime. This is
-        // only possible when using `write_to_frame_buffer`:
-        if !self.pending_draw_area.get().is_empty() {
-            // Start another draw operation:
-            self.draw_frame_buffer(DrawMode::WriteToFrameBuffer);
-        } else {
-            // Return to idle:
-            self.state.set(VirtIOGPUState::Idle);
-        }
+        self.client.map(|c| c.write_complete(subslice, Ok(())));
     }
 
     fn buffer_chain_callback(
@@ -1127,43 +1314,83 @@ impl<'a, 'b> VirtIOGPU<'a, 'b> {
             }
 
             (
-                VirtIOGPUState::InitializingTransferToHost2D,
-                TransferToHost2DResp::EXPECTED_CTRL_TYPE,
-            )
-            | (VirtIOGPUState::DrawTransferToHost2D(_), TransferToHost2DResp::EXPECTED_CTRL_TYPE) =>
-            {
+                VirtIOGPUState::InitializingResourceDetachBacking,
+                ResourceDetachBackingResp::EXPECTED_CTRL_TYPE,
+            ) => {
                 // Parse the remainder of the response:
-                let resp = TransferToHost2DResp::from_byte_iter_post_ctrl_header(
+                let resp = ResourceDetachBackingResp::from_byte_iter_post_ctrl_header(
+                    ctrl_header,
+                    &mut resp_iter,
+                )
+                .expect("Failed to parse VirtIO GPU ResourceDetachBackingResp");
+
+                // Continue the initialization routine:
+                self.initialize_resource_detach_backing_resp(resp, req_array, resp_array);
+            }
+
+            (
+                VirtIOGPUState::DrawResourceAttachBacking,
+                ResourceAttachBackingResp::EXPECTED_CTRL_TYPE,
+            ) => {
+                // Parse the remainder of the response:
+                let _resp = ResourceAttachBackingResp::from_byte_iter_post_ctrl_header(
+                    ctrl_header,
+                    &mut resp_iter,
+                )
+                .expect("Failed to parse VirtIO GPU ResourceAttachBackingResp");
+
+                // Continue the initialization routine:
+                self.continue_draw_transfer_to_host_2d(req_array, resp_array);
+            }
+
+            (VirtIOGPUState::DrawTransferToHost2D, TransferToHost2DResp::EXPECTED_CTRL_TYPE) => {
+                // Parse the remainder of the response:
+                let _resp = TransferToHost2DResp::from_byte_iter_post_ctrl_header(
                     ctrl_header,
                     &mut resp_iter,
                 )
                 .expect("Failed to parse VirtIO GPU TransferToHost2DResp");
 
                 // Continue the initialization routine:
-                self.draw_transfer_to_host_2d_resp(resp, req_array, resp_array);
+                self.continue_draw_resource_flush(req_array, resp_array);
             }
 
-            (VirtIOGPUState::InitializingResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE)
-            | (VirtIOGPUState::DrawResourceFlush(_), ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
+            (VirtIOGPUState::DrawResourceFlush, ResourceFlushResp::EXPECTED_CTRL_TYPE) => {
                 // Parse the remainder of the response:
-                let resp =
+                let _resp =
                     ResourceFlushResp::from_byte_iter_post_ctrl_header(ctrl_header, &mut resp_iter)
                         .expect("Failed to parse VirtIO GPU ResourceFlushResp");
 
                 // Continue the initialization routine:
-                self.draw_resource_flush_resp(resp, req_array, resp_array);
+                self.continue_draw_resource_flushed(req_array, resp_array);
+            }
+
+            (
+                VirtIOGPUState::DrawResourceDetachBacking,
+                ResourceDetachBackingResp::EXPECTED_CTRL_TYPE,
+            ) => {
+                // Parse the remainder of the response:
+                let _resp = ResourceDetachBackingResp::from_byte_iter_post_ctrl_header(
+                    ctrl_header,
+                    &mut resp_iter,
+                )
+                .expect("Failed to parse VirtIO GPU ResourceDetachBackingResp");
+
+                // Continue the initialization routine:
+                self.continue_draw_resource_detached_backing(req_array, resp_array);
             }
 
             (VirtIOGPUState::Uninitialized, _)
             | (VirtIOGPUState::InitializingResourceCreate2D, _)
             | (VirtIOGPUState::InitializingResourceAttachBacking, _)
             | (VirtIOGPUState::InitializingSetScanout, _)
-            | (VirtIOGPUState::InitializingTransferToHost2D, _)
-            | (VirtIOGPUState::InitializingResourceFlush, _)
+            | (VirtIOGPUState::InitializingResourceDetachBacking, _)
             | (VirtIOGPUState::Idle, _)
             | (VirtIOGPUState::SettingWriteFrame, _)
-            | (VirtIOGPUState::DrawTransferToHost2D(_), _)
-            | (VirtIOGPUState::DrawResourceFlush(_), _) => {
+            | (VirtIOGPUState::DrawResourceAttachBacking, _)
+            | (VirtIOGPUState::DrawTransferToHost2D, _)
+            | (VirtIOGPUState::DrawResourceFlush, _)
+            | (VirtIOGPUState::DrawResourceDetachBacking, _) => {
                 panic!("Received unexpected VirtIO GPU device response. Device state: {:?}, ctrl hader: {:?}", self.state.get(), ctrl_header);
             }
         }
@@ -1199,6 +1426,8 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
             return Err(ErrorCode::BUSY);
         };
 
+        kernel::debug!("set_write_frame({}, {}, {}, {})", x, y, width, height);
+
         // We first convert the coordinates to u32s:
         let x: u32 = x.try_into().map_err(|_| ErrorCode::INVAL)?;
         let y: u32 = y.try_into().map_err(|_| ErrorCode::INVAL)?;
@@ -1212,14 +1441,8 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
             return Err(ErrorCode::INVAL);
         }
 
-        // Calculate the overall number of pixels in the draw area:
-        let pixels = (width as usize)
-            .checked_mul(height as usize)
-            .ok_or(ErrorCode::INVAL)?;
-
-        // We don't extend the pending draw area with this rect right now, only
-        // doing so for actual calls to `write`. However, we do store the new
-        // drawing area as the bounding box and offset coordinates for `write`:
+        // Store the new drawing area as the bounding box and offset coordinates
+        // for `write`:
         self.current_draw_area.set((
             // Draw area:
             Rect {
@@ -1228,10 +1451,12 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
                 width,
                 height,
             },
-            // Current draw offset:
+            // Current draw offset, relative to the draw area itself:
             (0, 0),
-            // Pixels left to draw:
-            pixels,
+            // Precompute the number of pixels in this draw area:
+            (width as usize)
+                .checked_mul(height as usize)
+                .ok_or(ErrorCode::INVAL)?,
         ));
 
         // Set the device state to busy and issue the callback in a deferred
@@ -1246,96 +1471,174 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
 
     fn write(
         &self,
-        mut _buffer: SubSliceMut<'static, u8>,
-        _continue_write: bool,
+        buffer: SubSliceMut<'static, u8>,
+        continue_write: bool,
     ) -> Result<(), ErrorCode> {
-        // // Make sure we're idle:
-        // let VirtIOGPUState::Idle = self.state.get() else {
-        //     return Err(ErrorCode::BUSY);
-        // };
+        // Make sure we're idle:
+        let VirtIOGPUState::Idle = self.state.get() else {
+            return Err(ErrorCode::BUSY);
+        };
 
-        // // Write the contents of `buffer` to the internal frame buffer, in the
-        // // draw area set by `set_write_frame`.
-        // //
-        // // If `continue_write` is false, we must reset `x_off`, `y_off` and the
-        // // `pixels_remaining` value. Otherwise we start at the stored offset.
-        // let (draw_rect, (x_off, y_off), pixels_remaining) = if continue_write {
-        //     self.current_draw_area.get()
-        // } else {
-        //     let (draw_rect, _, _) = self.current_draw_area.get();
+        kernel::debug!("write(len = {}, {:?})", buffer.len(), continue_write);
 
-        //     // This multiplication must not overflow, as it hasn't overflowed
-        //     // when we performed it in `set_write_frame`:
-        //     (
-        //         draw_rect,
-        //         (0, 0),
-        //         (draw_rect.width as usize)
-        //             .checked_mul(draw_rect.height as usize)
-        //             .unwrap(),
-        //     )
-        // };
+        // If `continue_write` is false, we must reset `x_off` and
+        // `y_off`. Otherwise we start at the stored offset.
+        let (draw_rect, mut current_draw_offset, mut remaining_pixels) =
+            self.current_draw_area.get();
+        if !continue_write {
+            current_draw_offset = (0, 0);
+            // This multiplication must not overflow, as we've already performed
+            // it before in `set_write_area`:
+            remaining_pixels = (draw_rect.width as usize)
+                .checked_mul(draw_rect.height as usize)
+                .unwrap();
+        }
+        self.current_draw_area
+            .set((draw_rect, current_draw_offset, remaining_pixels));
 
-        // // Make sure the buffer has a length compatible with our pixel mode:
-        // if buffer.len() % PIXEL_STRIDE != 0 {
-        //     // TODO: this error code is not yet supported in the HIL:
-        //     return Err(ErrorCode::INVAL);
-        // }
-        // let buffer_pixels = buffer.len() / PIXEL_STRIDE;
+        // Ensure that this buffer is evenly divisible by PIXEL_STRIDE and that
+        // it can fit into the remaining part of the draw area:
+        if buffer.len() % PIXEL_STRIDE != 0 {
+            return Err(ErrorCode::INVAL);
+        }
+        if buffer.len() / PIXEL_STRIDE > remaining_pixels {
+            return Err(ErrorCode::SIZE);
+        }
 
-        // // Check whether this buffer will fit the remaining draw area:
-        // if buffer_pixels > pixels_remaining {
-        //     return Err(ErrorCode::SIZE);
-        // }
+        // Now, the `TRANSFER_TO_HOST_2D` command can only copy rectangles.
+        // However, when we performed a partial write (let's say of just one
+        // pixel), then the current x offset will not perfectly line up with the
+        // left boundary of the overall draw rectangle. Similarly, when the
+        // buffer doesn't perfectly fill up the last row of pixels, we can't
+        // draw them together with the previous rows of the rectangle. Thus, a
+        // single `write` call may result in at most three underlying
+        // `TRANSFER_TO_HOST_2D` commands.
+        //
+        // We use a common subroutine to identify the next data to copy. We
+        // first store the overall subslice active range, and the offset in this
+        // subslice (0 right now!), and then let that subroutine handle the rest:
+        let write_buffer_subslice_range = buffer.active_range();
+        self.write_buffer_subslice_range.set((
+            write_buffer_subslice_range.start,
+            write_buffer_subslice_range.end,
+        ));
+        self.write_buffer_offset.set(0);
 
-        // This following code is wrong, it needs to draw row-by-row instead.
-        todo!();
+        let (req_buffer, resp_buffer) = self.req_resp_buffers.take().unwrap();
 
-        // // Okay, looks good, we can start drawing! Calculate the start offset
-        // // into our framebuffer.
-        // let fb_start_byte_offset = (x_off as usize)
-        //     .checked_mul(self.width as usize)
-        //     .and_then(|o| o.checked_add(y_off as usize))
-        //     .and_then(|o| o.checked_mul(PIXEL_STRIDE))
-        //     .unwrap();
-        // let fb_end_byte_offset = fb_start_byte_offset.checked_add(buffer.len()).unwrap();
+        // Now, attach the user-supplied buffer to this device:
+        let buffer_slice = buffer.take();
 
-        // // The frame buffer must be accessible here. We never "take" it for
-        // // longer than a single, synchronous method call:
-        // self.frame_buffer
-        //     .map(|fb| {
-        //         fb[fb_start_byte_offset..fb_end_byte_offset].copy_from_slice(buffer.as_slice())
-        //     })
-        //     .unwrap();
+        const ENTRIES: usize = 1;
+        let cmd_resource_attach_backing_req: ResourceAttachBackingReq<{ ENTRIES }> =
+            ResourceAttachBackingReq {
+                ctrl_header: CtrlHeader {
+                    ctrl_type: ResourceAttachBackingReq::<{ ENTRIES }>::CTRL_TYPE,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0,
+                },
+                resource_id: 1,
+                nr_entries: ENTRIES as u32,
+                entries: [MemEntry {
+                    addr: buffer_slice.as_ptr() as u64 + write_buffer_subslice_range.start as u64,
+                    length: write_buffer_subslice_range.len() as u32,
+                    padding: 0,
+                }],
+            };
+        cmd_resource_attach_backing_req.write_to_byte_iter(&mut req_buffer.iter_mut());
 
-        // // Update the offset in the draw area, and the number of pixels
-        // // remaining:
-        // self.current_draw_area.set((
-        //     draw_rect,
-        //     (
-        //         x_off + u32::try_from(buffer_pixels / self.width as usize).unwrap(),
-        //         y_off + u32::try_from(buffer_pixels % self.width as usize).unwrap(),
-        //     ),
-        //     pixels_remaining - buffer_pixels,
-        // ));
+        assert!(self.write_buffer.replace(buffer_slice).is_none());
 
-        // // Extend the pending draw area by the drawn bytes.
-        // //
-        // // TODO: this could be made more efficient by actually respecting the
-        // // offsets and length of the buffer written. For now, we just flush the
-        // // whole `draw_rect`:
-        // self.pending_draw_area
-        //     .set(self.pending_draw_area.get().extend(draw_rect));
+        let mut buffer_chain = [
+            Some(VirtqueueBuffer {
+                buf: req_buffer,
+                len: ResourceAttachBackingReq::<{ ENTRIES }>::ENCODED_SIZE,
+                device_writeable: false,
+            }),
+            Some(VirtqueueBuffer {
+                buf: resp_buffer,
+                len: ResourceAttachBackingResp::ENCODED_SIZE,
+                device_writeable: true,
+            }),
+        ];
+        self.control_queue
+            .provide_buffer_chain(&mut buffer_chain)
+            .unwrap();
 
-        // // Store the client's buffer. We must hold on to it until we issue the
-        // // callback:
-        // assert!(self.client_write_buffer.replace(buffer).is_none());
+        self.state.set(VirtIOGPUState::DrawResourceAttachBacking);
 
-        // // Tell the screen to draw, please. This will also transition the GPU
-        // // device state:
-        // self.draw_frame_buffer(DrawMode::Write);
-
-        // Ok(())
+        Ok(())
     }
+
+    // fn write(
+    //     &self,
+    //     mut _buffer: SubSliceMut<'static, u8>,
+    //     _continue_write: bool,
+    // ) -> Result<(), ErrorCode> {
+
+    //     // // Make sure the buffer has a length compatible with our pixel mode:
+    //     // if buffer.len() % PIXEL_STRIDE != 0 {
+    //     //     // TODO: this error code is not yet supported in the HIL:
+    //     //     return Err(ErrorCode::INVAL);
+    //     // }
+    //     // let buffer_pixels = buffer.len() / PIXEL_STRIDE;
+
+    //     // // Check whether this buffer will fit the remaining draw area:
+    //     // if buffer_pixels > pixels_remaining {
+    //     //     return Err(ErrorCode::SIZE);
+    //     // }
+
+    //     // This following code is wrong, it needs to draw row-by-row instead.
+    //     todo!();
+
+    //     // // Okay, looks good, we can start drawing! Calculate the start offset
+    //     // // into our framebuffer.
+    //     // let fb_start_byte_offset = (x_off as usize)
+    //     //     .checked_mul(self.width as usize)
+    //     //     .and_then(|o| o.checked_add(y_off as usize))
+    //     //     .and_then(|o| o.checked_mul(PIXEL_STRIDE))
+    //     //     .unwrap();
+    //     // let fb_end_byte_offset = fb_start_byte_offset.checked_add(buffer.len()).unwrap();
+
+    //     // // The frame buffer must be accessible here. We never "take" it for
+    //     // // longer than a single, synchronous method call:
+    //     // self.frame_buffer
+    //     //     .map(|fb| {
+    //     //         fb[fb_start_byte_offset..fb_end_byte_offset].copy_from_slice(buffer.as_slice())
+    //     //     })
+    //     //     .unwrap();
+
+    //     // // Update the offset in the draw area, and the number of pixels
+    //     // // remaining:
+    //     // self.current_draw_area.set((
+    //     //     draw_rect,
+    //     //     (
+    //     //         x_off + u32::try_from(buffer_pixels / self.width as usize).unwrap(),
+    //     //         y_off + u32::try_from(buffer_pixels % self.width as usize).unwrap(),
+    //     //     ),
+    //     //     pixels_remaining - buffer_pixels,
+    //     // ));
+
+    //     // // Extend the pending draw area by the drawn bytes.
+    //     // //
+    //     // // TODO: this could be made more efficient by actually respecting the
+    //     // // offsets and length of the buffer written. For now, we just flush the
+    //     // // whole `draw_rect`:
+    //     // self.pending_draw_area
+    //     //     .set(self.pending_draw_area.get().extend(draw_rect));
+
+    //     // // Store the client's buffer. We must hold on to it until we issue the
+    //     // // callback:
+    //     // assert!(self.client_write_buffer.replace(buffer).is_none());
+
+    //     // // Tell the screen to draw, please. This will also transition the GPU
+    //     // // device state:
+    //     // self.draw_frame_buffer(DrawMode::Write);
+
+    //     // Ok(())
+    // }
 
     fn set_brightness(&self, _brightness: u16) -> Result<(), ErrorCode> {
         // nop, not supported
@@ -1355,84 +1658,98 @@ impl<'a> Screen<'a> for VirtIOGPU<'a, '_> {
     }
 }
 
-impl<'a> InMemoryFrameBufferScreen<'a> for VirtIOGPU<'a, '_> {
-    fn write_to_frame_buffer(
-        &self,
-        f: impl FnOnce(ScreenDims, ScreenPixelFormat, &mut [u8]) -> Result<ScreenRect, ErrorCode>,
-    ) -> Result<(), ErrorCode> {
-        // Check that we're not busy. We allow multiple calls to this method, as
-        // per its documentation.
-        let idle = match self.state.get() {
-            VirtIOGPUState::Idle => true,
-            VirtIOGPUState::DrawTransferToHost2D(DrawMode::WriteToFrameBuffer) => false,
-            VirtIOGPUState::DrawResourceFlush(DrawMode::WriteToFrameBuffer) => false,
-            _ => return Err(ErrorCode::BUSY),
-        };
+// impl<'a> InMemoryFrameBufferScreen<'a> for VirtIOGPU<'a, '_> {
+//     fn write_to_frame_buffer(
+//         &self,
+//         f: impl FnOnce(ScreenDims, ScreenPixelFormat, &mut [u8]) -> Result<ScreenRect, ErrorCode>,
+//     ) -> Result<(), ErrorCode> {
+//         // Check that we're not busy. We allow multiple calls to this method, as
+//         // per its documentation.
+//         let idle = match self.state.get() {
+//             VirtIOGPUState::Idle => true,
+//             VirtIOGPUState::DrawTransferToHost2D(DrawMode::WriteToFrameBuffer) => false,
+//             VirtIOGPUState::DrawResourceFlush(DrawMode::WriteToFrameBuffer) => false,
+//             _ => return Err(ErrorCode::BUSY),
+//         };
 
-        // Try to get a hold of the frame buffer. If it's already taken, this is
-        // likely because of a reentrant call to this function. Return `BUSY` in
-        // that case:
-        let Some(frame_buffer) = self.frame_buffer.take() else {
-            return Err(ErrorCode::BUSY);
-        };
+//         // Try to get a hold of the frame buffer. If it's already taken, this is
+//         // likely because of a reentrant call to this function. Return `BUSY` in
+//         // that case:
+//         let Some(frame_buffer) = self.frame_buffer.take() else {
+//             return Err(ErrorCode::BUSY);
+//         };
 
-        // Pass it to the closure:
-        let closure_res = f(
-            ScreenDims {
-                x: self.width as usize,
-                y: self.height as usize,
-            },
-            ScreenPixelFormat::ARGB_8888,
-            frame_buffer,
-        );
+//         // Pass it to the closure:
+//         let closure_res = f(
+//             ScreenDims {
+//                 x: self.width as usize,
+//                 y: self.height as usize,
+//             },
+//             ScreenPixelFormat::ARGB_8888,
+//             frame_buffer,
+//         );
 
-        kernel::debug!("{:x?}", &frame_buffer[..256]);
+//      let led_offset = (24 * self.width) as usize;
+//         kernel::debug!("{:x?}", &frame_buffer[led_offset..(led_offset + 128)]);
 
-        // Replace the frame_buffer unconditionally:
-        self.frame_buffer.replace(frame_buffer);
+//         // Replace the frame_buffer unconditionally:
+//         self.frame_buffer.replace(frame_buffer);
 
-        match closure_res {
-            Err(e) => {
-                // The closure returned an error, we do not need to emit a
-                // callback.
-                Err(e)
-            }
+//         match closure_res {
+//             Err(e) => {
+//                 // The closure returned an error, we do not need to emit a
+//                 // callback.
+//                 Err(e)
+//             }
 
-            Ok(screen_rect) => {
-                // The closure modified the frame buffer, issue a redraw of the
-                // changed area. We first check that the to-draw area actually
-                // fits:
-                let x: u32 = screen_rect.x.try_into().map_err(|_| ErrorCode::SIZE)?;
-                let y: u32 = screen_rect.y.try_into().map_err(|_| ErrorCode::SIZE)?;
-                let width: u32 = screen_rect.width.try_into().map_err(|_| ErrorCode::SIZE)?;
-                let height: u32 = screen_rect.height.try_into().map_err(|_| ErrorCode::SIZE)?;
+//             Ok(screen_rect) => {
+//                 // The closure modified the frame buffer, issue a redraw of the
+//                 // changed area. We first check that the to-draw area actually
+//                 // fits:
+//                 let x: u32 = screen_rect.x.try_into().map_err(|_| ErrorCode::SIZE)?;
+//                 let y: u32 = screen_rect.y.try_into().map_err(|_| ErrorCode::SIZE)?;
+//                 let width: u32 = screen_rect.width.try_into().map_err(|_| ErrorCode::SIZE)?;
+//                 let height: u32 = screen_rect.height.try_into().map_err(|_| ErrorCode::SIZE)?;
 
-                if x.checked_add(width).ok_or(ErrorCode::SIZE)? > self.width
-                    || y.checked_add(height).ok_or(ErrorCode::SIZE)? > self.height
-                {
-                    return Err(ErrorCode::SIZE);
-                }
+//                 if x.checked_add(width).ok_or(ErrorCode::SIZE)? > self.width
+//                     || y.checked_add(height).ok_or(ErrorCode::SIZE)? > self.height
+//                 {
+//                     return Err(ErrorCode::SIZE);
+//                 }
 
-                // Extend the to-redraw area:
-                self.pending_draw_area
-                    .set(self.pending_draw_area.get().extend(Rect {
-                        x,
-                        y,
-                        width,
-                        height,
-                    }));
+//                 // Extend the to-redraw area:
+//                 self.pending_draw_area
+//                     .set(self.pending_draw_area.get().extend(Rect {
+//                         x,
+//                         y,
+//                         width,
+//                         height,
+//                     }));
 
-                // If we're idle, issue a re-draw. Otherwise, one will
-                // automatically be issued after the current draw operation:
-                if idle {
-                    self.draw_frame_buffer(DrawMode::WriteToFrameBuffer);
-                }
+//                 let k = self.pending_draw_area.get();
 
-                Ok(())
-            }
-        }
-    }
-}
+//                 if height == 24 {
+//                     kernel::debug!(
+//                         "new pending_draw_area x{} y{} width{} height{}",
+//                         k.x,
+//                         k.y,
+//                         k.width,
+//                         k.height
+//                     );
+//                 }
+
+//                 // If we're idle, issue a re-draw. Otherwise, one will
+//                 // automatically be issued after the current draw operation:
+//                 if idle {
+//                  kernel::debug!("not idle");
+//                     self.draw_frame_buffer(DrawMode::WriteToFrameBuffer);
+//                 }
+
+//                 Ok(())
+//             }
+//         }
+//     }
+// }
 
 impl<'b> SplitVirtqueueClient<'b> for VirtIOGPU<'_, 'b> {
     fn buffer_chain_ready(
@@ -1460,6 +1777,9 @@ impl DeferredCallClient for VirtIOGPU<'_, '_> {
                         self.state.get()
                     );
                 };
+
+                // Set the device staste back to idle:
+                self.state.set(VirtIOGPUState::Idle);
 
                 // Issue callback:
                 self.client.map(|c| c.command_complete(Ok(())));

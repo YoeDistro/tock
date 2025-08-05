@@ -338,6 +338,10 @@ impl<'a, T> SubSliceMut<'a, T> {
         self.active_slice_mut().as_mut_ptr()
     }
 
+    pub fn active_range(&self) -> Range<usize> {
+        self.active_range.clone()
+    }
+
     /// Returns a slice of the currently accessible portion of the
     /// LeasableBuffer.
     pub fn as_slice(&mut self) -> &mut [T] {

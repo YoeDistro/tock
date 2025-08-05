@@ -140,29 +140,6 @@ impl ScreenPixelFormat {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Dims {
-    pub x: usize,
-    pub y: usize,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Rect {
-    pub x: usize,
-    pub y: usize,
-    pub width: usize,
-    pub height: usize,
-}
-
-impl Rect {
-    pub const EMPTY: Rect = Rect {
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-    };
-}
-
 /// Interface to configure the screen.
 pub trait ScreenSetup<'a> {
     fn set_client(&self, client: &'a dyn ScreenSetupClient);
@@ -342,48 +319,6 @@ pub trait Screen<'a> {
     /// the device does not accelerate color inversion. Returns `INVAL` if the
     /// current pixel format does not support color inversion.
     fn set_invert(&self, enabled: bool) -> Result<(), ErrorCode>;
-}
-
-pub trait InMemoryFrameBufferScreen<'a>: Screen<'a> {
-    /// Update the device's internal in-memory frame buffer directly.
-    ///
-    /// If the frame buffer is currently available for writing, this function
-    /// will invoke the provided closure, supplying two arguments: the current
-    /// dimensions of the screen, its current pixel format, and the screen's
-    /// backing frame buffer (layed out in a `frame_buffer[row][column]`
-    /// format).
-    ///
-    /// If this closure returns `Ok(rect)`, the screen will be updated to
-    /// reflect the new contents, in at least the area specified by `rect`. When
-    /// finished, the driver will call the `write_complete()` callback.
-    ///
-    /// If this closure returns `Err(e)`, this error will be forwarded to the
-    /// return value of this function. No callback will be invoked, and the
-    /// screen's contents may not be updated. However, depending on the
-    /// hardware, changes to the frame buffer might still take effect
-    /// immediately, or do so after a subsequent call to `write_to_frame_buffer`
-    /// or `write`.
-    ///
-    /// It is legal to call this function multiple times, even before the
-    /// `write_complete` callback to a previous call has been received. However,
-    /// at any given time, at most two future pending callback will be
-    /// delivered, independent of the number of calls to
-    /// `write_to_frame_buffer`: one for the current in-progress redraw, and one
-    /// for the subsequent redraw includding all operations submitted after the
-    /// call to `write_to_frame_buffer` resulting in the previous
-    /// callback. Should any call of `write_to_frame_buffer` result in an
-    /// asynchronously delivered error, that return value shall have precedence
-    /// over other, non-error values. In case of multiple errors, any single one
-    /// error will be delivered.
-    ///
-    /// Return values:
-    /// - `Ok(())`: Write is valid and will be sent to the screen.
-    /// - `BUSY`: Another write, not using `write_to_frame_buffer`, is in progress.
-    /// - Any other error issued by the passed closure.
-    fn write_to_frame_buffer(
-        &self,
-        f: impl FnOnce(Dims, ScreenPixelFormat, &mut [u8]) -> Result<Rect, ErrorCode>,
-    ) -> Result<(), ErrorCode>;
 }
 
 pub trait ScreenAdvanced<'a>: Screen<'a> + ScreenSetup<'a> {}

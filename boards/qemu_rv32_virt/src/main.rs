@@ -404,12 +404,6 @@ unsafe fn start() -> (
             [0; VIDEO_WIDTH * VIDEO_HEIGHT * PIXEL_STRIDE]
         );
 
-        for (i, p) in frame_buffer.chunks_mut(4).enumerate() {
-            p[0] = i as u8 % 19 * (255 / 19); // red
-            p[1] = i as u8 % 29 * (255 / 29); // green
-            p[2] = i as u8 % 53 * (255 / 53); // blue
-        }
-
         // VirtIO GPU device driver instantiation
         let gpu = static_init!(
             VirtIOGPU,
@@ -417,7 +411,6 @@ unsafe fn start() -> (
                 control_queue,
                 req_buffer,
                 resp_buffer,
-                frame_buffer,
                 VIDEO_WIDTH,
                 VIDEO_HEIGHT,
             )
@@ -441,9 +434,9 @@ unsafe fn start() -> (
                 'static,
                 qemu_rv32_virt_chip::virtio::devices::virtio_gpu::VirtIOGPU<'static, 'static>,
             >,
-            ScreenARGB8888ToMono8BitPage::new(gpu)
+            ScreenARGB8888ToMono8BitPage::new(gpu, frame_buffer)
         );
-        kernel::deferred_call::DeferredCallClient::register(screen_argb_8888_to_mono_8bit_page);
+        // kernel::deferred_call::DeferredCallClient::register(screen_argb_8888_to_mono_8bit_page);
         gpu.set_client(screen_argb_8888_to_mono_8bit_page);
 
         let screen_split =
