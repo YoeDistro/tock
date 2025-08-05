@@ -32,7 +32,7 @@ type ScreenHw = capsules_extra::screen_adapters::ScreenARGB8888ToMono8BitPage<
 
 type ScreenSplitUser = components::screen::ScreenSplitUserComponentType<ScreenHw>;
 
-type ScreenOnLed = components::screen_on::ScreenOnLedComponentType<ScreenSplitUser, 4, 128, 24>;
+type ScreenOnLed = components::screen_on::ScreenOnLedComponentType<ScreenSplitUser, 4, 128, 64>;
 type ScreenOnLedSingle = capsules_extra::screen_on_led::ScreenOnLedSingle<'static, ScreenOnLed>;
 
 type Led = capsules_core::led::LedDriver<'static, ScreenOnLedSingle, 4>;
@@ -378,7 +378,7 @@ unsafe fn start() -> (
 
         // Video output dimensions. We use VGA (600 x 480):
         const VIDEO_WIDTH: usize = 128;
-        const VIDEO_HEIGHT: usize = 64;
+        const VIDEO_HEIGHT: usize = 128;
 
         // VirtIO GPU requires a single Virtqueue for sending commands. It can
         // optionally use a second VirtQueue for cursor commands, which we don't
@@ -444,11 +444,11 @@ unsafe fn start() -> (
                 .finalize(components::screen_split_mux_component_static!(ScreenHw));
 
         let screen_split_userspace =
-            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 0, 128, 32)
+            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 0, 128, 64)
                 .finalize(components::screen_split_user_component_static!(ScreenHw));
 
         let screen_split_kernel =
-            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 32, 128, 24)
+            components::screen::ScreenSplitUserComponent::new(screen_split, 0, 64, 128, 64)
                 .finalize(components::screen_split_user_component_static!(ScreenHw));
 
         let screen = components::screen::ScreenComponent::new(
@@ -461,7 +461,7 @@ unsafe fn start() -> (
 
         let screen_on_leds =
             components::screen_on::ScreenOnLedComponent::new(screen_split_kernel).finalize(
-                components::screen_on_led_component_static!(ScreenSplitUser, 4, 128, 24),
+                components::screen_on_led_component_static!(ScreenSplitUser, 4, 128, 64),
             );
 
         let led =

@@ -118,8 +118,9 @@ run-app: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 # Same as `run-app`, but with a `virtio-gpu` video device attached, showing the
 # screen output in a QEMU window
 .PHONY: run-app-gui
-run-app-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
+run-app-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 	@echo
+	tockloader flash --flash-file tock_simulated_board.bin --board qemu_rv32_virt --arch rv32imac --address 0x80000000 $<
 	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
 	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
           " - kernel $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf\n"\
@@ -127,7 +128,6 @@ run-app-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	@echo "To exit type C-a x"
 	@echo
 	$(QEMU_BASE_CMDLINE) \
-	  -bios $< \
-	  -device loader,file=$(APP),addr=0x80100000 \
+	  -bios tock_simulated_board.bin \
 	  -device virtio-gpu-device \
     -serial stdio
