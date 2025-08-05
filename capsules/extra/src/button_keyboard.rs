@@ -16,11 +16,11 @@ use kernel::{ErrorCode, ProcessId};
 use capsules_core::driver;
 pub const DRIVER_NUM: usize = driver::NUM::Button as usize;
 
-/// Keeps track for each app of which buttons it has a registered
-/// interrupt for.
+/// Keeps track for each app of which buttons it has a registered interrupt
+/// for.
 ///
-/// `SubscribeMap` is a bit array where bits are set to one if that
-/// app has an interrupt registered for that button.
+/// `subscribe_map` is a bit array where bits are set to one if that app has an
+/// interrupt registered for that button.
 #[derive(Default)]
 pub struct App {
     subscribe_map: u32,
@@ -29,6 +29,8 @@ pub struct App {
 /// Manages the list of GPIO pins that are connected to buttons and which apps
 /// are listening for interrupts from which buttons.
 pub struct ButtonKeyboard<'a> {
+    /// The key codes we are looking for to map to buttons. These are in order,
+    /// e.g., the second key code in the array maps to button with index 1.
     key_codes: &'a [u16],
     apps: Grant<App, UpcallCount<1>, AllowRoCount<0>, AllowRwCount<0>>,
 }
@@ -67,22 +69,22 @@ impl SyscallDriver for ButtonKeyboard<'_> {
 
             // enable interrupts for a button
             1 => {
-                if data < self.key_codes.len() {
+                if data >= self.key_codes.len() {
+                    CommandReturn::failure(ErrorCode::INVAL)
+                } else {
                     self.apps
                         .enter(processid, |app, _| {
                             app.subscribe_map |= 1 << data;
                             CommandReturn::success()
                         })
                         .unwrap_or_else(|err| CommandReturn::failure(err.into()))
-                } else {
-                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
                 }
             }
 
             // disable interrupts for a button
             2 => {
                 if data >= self.key_codes.len() {
-                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
+                    CommandReturn::failure(ErrorCode::INVAL)
                 } else {
                     self.apps
                         .enter(processid, |app, _| {
@@ -96,7 +98,7 @@ impl SyscallDriver for ButtonKeyboard<'_> {
             // read input
             3 => {
                 if data >= self.key_codes.len() {
-                    CommandReturn::failure(ErrorCode::INVAL) /* impossible button */
+                    CommandReturn::failure(ErrorCode::INVAL)
                 } else {
                     // Always return not pressed
                     CommandReturn::success_u32(0)
@@ -113,10 +115,10 @@ impl SyscallDriver for ButtonKeyboard<'_> {
     }
 }
 
-impl kernel::hil::keyboard::Client for ButtonKeyboard<'_> {
-    fn keys_pressed(&self, keys: &[u16], _result: Result<(), ErrorCode>) {
+impl kernel::hil::keyboard::KeyboardClient for ButtonKeyboard<'_> {
+    fn keys_pressed(&self, keys: &[(u16, bool)], _result: Result<(), ErrorCode>) {
         // Iterate all key presses we received.
-        for key in keys.iter() {
+        for (key, is_pressed) in keys.iter() {
             // Iterate through all of the keys we are looking for.
             for (active_key_index, active_key) in self.key_codes.iter().enumerate() {
                 // If there is a match then we may want to handle this key.
@@ -130,7 +132,9 @@ impl kernel::hil::keyboard::Client for ButtonKeyboard<'_> {
                     // Schedule callback for apps waiting on that key.
                     self.apps.each(|_, app, upcalls| {
                         if app.subscribe_map & (1 << active_key_index) != 0 {
-                            let _ = upcalls.schedule_upcall(UPCALL_NUM, (active_key_index, 0, 0));
+                            let button_state = if *is_pressed { 1 } else { 0 };
+                            let _ = upcalls
+                                .schedule_upcall(UPCALL_NUM, (active_key_index, button_state, 0));
                         }
                     });
                 }
