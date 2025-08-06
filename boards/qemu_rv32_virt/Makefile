@@ -90,7 +90,7 @@ install: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
 
 # Run the kernel inside a qemu-riscv32-system "virt" machine type simulation
 .PHONY: run
-run: $(call +s,$(LOCAL_BOARD_BINARY)) $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf | install
+run: $(call +s,$(LOCAL_BOARD_BINARY)) | install
 	@echo
 	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
 	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
