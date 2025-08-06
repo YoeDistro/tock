@@ -69,11 +69,29 @@ QEMU_BASE_CMDLINE := \
     -global virtio-mmio.force-legacy=false \
     -device virtio-rng-device \
     -device virtio-keyboard-device \
+    -device virtio-gpu-device \
     $(QEMU_NETDEV_CMDLINE)
+
+# Handle spaces in paths
+s+ = $(subst $(null) $(null),+,$1)
++s = $(subst +,\ ,$1)
+
+# The path to the local board where the kernel and apps are written to.
+LOCAL_BOARD_BINARY := $(call s+,$(shell tockloader local-board path))
+
+# Set this as the default local board to write apps to with tockloader
+.PHONY: init
+init:
+	tockloader set-local-board qemu_rv32_virt
+
+# Write the kernel to the flash file with tockloader
+.PHONY: install
+install: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
+	tockloader flash --address 0x80000000 $<
 
 # Run the kernel inside a qemu-riscv32-system "virt" machine type simulation
 .PHONY: run
-run: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
+run: $(call +s,$(LOCAL_BOARD_BINARY)) | install
 	@echo
 	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
 	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
@@ -81,53 +99,4 @@ run: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
 	@echo "To exit type C-a x"
 	@echo
 	$(QEMU_BASE_CMDLINE) \
-	  -bios $< \
-	  -nographic
-
-# Same as `run`, but with a `virtio-gpu` video device attached, showing the
-# screen output in a QEMU window
-.PHONY: run-gui
-run-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
-	@echo
-	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
-	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
-          " - kernel $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf"
-	@echo "To exit type C-a x"
-	@echo
-	$(QEMU_BASE_CMDLINE) \
-	  -bios $< \
-	  -device virtio-gpu-device \
-    -serial stdio
-
-# Same as `run`, but load an application specified by $(APP) into the respective
-# memory location.
-.PHONY: run-app
-run-app: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf
-	@echo
-	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
-	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
-          " - kernel $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf\n"\
-	  " - app $(APP)"
-	@echo "To exit type C-a x"
-	@echo
-	$(QEMU_BASE_CMDLINE) \
-	  -bios $< \
-	  -device loader,file=$(APP),addr=0x80100000 \
-	  -nographic
-
-# Same as `run-app`, but with a `virtio-gpu` video device attached, showing the
-# screen output in a QEMU window
-.PHONY: run-app-gui
-run-app-gui: $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).bin
-	@echo
-	tockloader flash --flash-file tock_simulated_board.bin --board qemu_rv32_virt --arch rv32imac --address 0x80000000 $<
-	@echo -e "Running $$($(QEMU_CMD) --version | head -n1)"\
-	  "(tested: $(WORKING_QEMU_VERSIONS); known broken: $(BROKEN_QEMU_VERSIONS)) with\n"\
-          " - kernel $(TOCK_ROOT_DIRECTORY)target/$(TARGET)/release/$(PLATFORM).elf\n"\
-	  " - app $(APP)"
-	@echo "To exit type C-a x"
-	@echo
-	$(QEMU_BASE_CMDLINE) \
-	  -bios tock_simulated_board.bin \
-	  -device virtio-gpu-device \
-    -serial stdio
+	  -bios $<
