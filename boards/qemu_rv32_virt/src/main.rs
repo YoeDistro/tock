@@ -37,6 +37,13 @@ type ScreenOnLedSingle = capsules_extra::screen_on_led::ScreenOnLedSingle<'stati
 
 type Led = capsules_core::led::LedDriver<'static, ScreenOnLedSingle, 4>;
 
+pub struct PMCapability;
+unsafe impl capabilities::ProcessManagementCapability for PMCapability {}
+unsafe impl capabilities::ProcessStartCapability for PMCapability {}
+type ProcessInfoDriver = capsules_extra::process_info_driver::ProcessInfo<PMCapability>;
+
+type ButtonDriver = capsules_extra::button_keyboard::ButtonKeyboard<'static>;
+
 pub const NUM_PROCS: usize = 4;
 
 /// Static variables used by io.rs.
@@ -79,6 +86,7 @@ struct QemuRv32VirtPlatform {
         'static,
         VirtualMuxAlarm<'static, qemu_rv32_virt_chip::chip::QemuRv32VirtClint<'static>>,
     >,
+    process_info: &'static ProcessInfoDriver,
     ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
     scheduler: &'static CooperativeSched<'static>,
     scheduler_timer: &'static VirtualSchedulerTimer<
@@ -97,6 +105,7 @@ struct QemuRv32VirtPlatform {
         >,
     >,
     virtio_gpu_screen: Option<(&'static ScreenDriver, &'static Led)>,
+    virtio_keyboard_button: Option<&'static ButtonDriver>,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -109,6 +118,7 @@ impl SyscallDriverLookup for QemuRv32VirtPlatform {
             capsules_core::console::DRIVER_NUM => f(Some(self.console)),
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::low_level_debug::DRIVER_NUM => f(Some(self.lldb)),
+            capsules_extra::process_info_driver::DRIVER_NUM => f(Some(self.process_info)),
             capsules_core::rng::DRIVER_NUM => {
                 if let Some(rng_driver) = self.virtio_rng {
                     f(Some(rng_driver))
@@ -133,6 +143,13 @@ impl SyscallDriverLookup for QemuRv32VirtPlatform {
             capsules_core::led::DRIVER_NUM => {
                 if let Some((_screen_driver, led_driver)) = self.virtio_gpu_screen {
                     f(Some(led_driver))
+                } else {
+                    f(None)
+                }
+            }
+            capsules_core::button::DRIVER_NUM => {
+                if let Some(button_driver) = self.virtio_keyboard_button {
+                    f(Some(button_driver))
                 } else {
                     f(None)
                 }
@@ -784,6 +801,17 @@ unsafe fn start() -> (
     )
     .finalize(components::low_level_debug_component_static!());
 
+    //--------------------------------------------------------------------------
+    // PROCESS INFO FOR USERSPACE
+    //--------------------------------------------------------------------------
+
+    let process_info = components::process_info_driver::ProcessInfoComponent::new(
+        board_kernel,
+        capsules_extra::process_info_driver::DRIVER_NUM,
+        PMCapability,
+    )
+    .finalize(components::process_info_component_static!(PMCapability));
+
     let scheduler = components::sched::cooperative::CooperativeComponent::new(processes)
         .finalize(components::cooperative_component_static!(NUM_PROCS));
 
@@ -801,6 +829,8 @@ unsafe fn start() -> (
         lldb,
         scheduler,
         scheduler_timer,
+        process_info,
+        virtio_keyboard_button: button_keyboard,
         virtio_rng: virtio_rng_driver,
         virtio_ethernet_tap,
         virtio_gpu_screen,
