@@ -253,7 +253,6 @@ pub struct TbfHeaderV2ShortId {
 
 #[derive(Clone, Copy, Debug)]
 pub struct TbfHeaderV2Position {
-    mode: u32,
     configuration: TbfHeaderV2PositionInformation,
 }
 
@@ -287,7 +286,7 @@ pub enum TbfHeaderV2PositionInformation {
     /// application's text data will fit in the application's RAM region. The
     /// kernel will also ensure that the memory region is executable.
     ///
-    /// The kernel will do any copying and the application must be able to
+    /// The kernel will not do any copying and the application must be able to
     /// execute from its flash region initially before jumping to execute from
     /// its RAM region.
     FixedOffset,
@@ -627,6 +626,40 @@ impl core::convert::TryFrom<&[u8]> for TbfHeaderV2ShortId {
                     .ok_or(TbfParseError::InternalError)?
                     .try_into()?,
             )),
+        })
+    }
+}
+
+impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Position {
+    type Error = TbfParseError;
+
+    fn try_from(b: &[u8]) -> Result<TbfHeaderV2Position, Self::Error> {
+        let postion_mode_id = u32::from_le_bytes(
+            b.get(0..4)
+                .ok_or(TbfParseError::InternalError)?
+                .try_into()?,
+        );
+
+        let position_mode = match postion_mode_id {
+            0 => TbfHeaderV2PositionInformation::RopiRwpi,
+            1 => TbfHeaderV2PositionInformation::FixedAddresses(TbfHeaderV2FixedAddresses {
+                start_process_ram: u32::from_le_bytes(
+                    b.get(0..4)
+                        .ok_or(TbfParseError::NotEnoughFlash)?
+                        .try_into()?,
+                ),
+                start_process_flash: u32::from_le_bytes(
+                    b.get(4..8)
+                        .ok_or(TbfParseError::NotEnoughFlash)?
+                        .try_into()?,
+                ),
+            }),
+            2 => TbfHeaderV2PositionInformation::FixedOffset,
+            _ => TbfHeaderV2PositionInformation::RopiRwpi,
+        };
+
+        Ok(TbfHeaderV2Position {
+            configuration: position_mode,
         })
     }
 }
