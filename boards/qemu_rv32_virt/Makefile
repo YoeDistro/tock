@@ -70,7 +70,8 @@ QEMU_BASE_CMDLINE := \
     -device virtio-rng-device \
     -device virtio-keyboard-device \
     -device virtio-gpu-device \
-    $(QEMU_NETDEV_CMDLINE)
+    $(QEMU_NETDEV_CMDLINE) \
+    -serial stdio
 
 # Handle spaces in paths
 s+ = $(subst $(null) $(null),+,$1)
@@ -99,4 +100,4 @@ run: $(call +s,$(LOCAL_BOARD_BINARY)) | install
 	@echo "To exit type C-a x"
 	@echo
 	$(QEMU_BASE_CMDLINE) \
-	  -bios $<
+	  -bios '$<'
