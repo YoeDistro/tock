@@ -269,25 +269,13 @@ pub enum TbfHeaderV2PositionInformation {
     /// - https://mypages.iar.com/s/article/Position-independent-code-and-data-ROPI-and-RWPI?language=en_US
     RopiRwpi,
 
-    // /// This app is compiled without position independence.
-    // ///
-    // /// This app must be located at the specified addresses in both flash and
-    // /// RAM.
-    // ///
-    // /// If this header and the `TbfHeaderFixedAddresses` headers are both
-    // /// present, this header takes precedence and the `TbfHeaderFixedAddresses`
-    // /// header is ignored.
-    // FixedAddresses(TbfHeaderV2FixedAddresses),
     /// This app is compiled with "standard" PIC where the code and data must be
     /// a fixed offset.
     ///
-    /// The kernel will allocate additional memory to ensure that the
-    /// application's text data will fit in the application's RAM region. The
-    /// kernel will also ensure that the memory region is executable.
-    ///
-    /// The kernel will not do any copying and the application must be able to
-    /// execute from its flash region initially before jumping to execute from
-    /// its RAM region.
+    /// The kernel will ensure that the memory region is executable. The kernel
+    /// will not do any copying and the application must be able to execute
+    /// from its flash region initially before jumping to execute from its RAM
+    /// region.
     Pie,
 }
 
