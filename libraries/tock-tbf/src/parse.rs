@@ -129,6 +129,7 @@ pub fn parse_tbf_header(
                 let mut storage_permissions_pointer: Option<&[u8]> = None;
                 let mut kernel_version: Option<types::TbfHeaderV2KernelVersion> = None;
                 let mut short_id: Option<types::TbfHeaderV2ShortId> = None;
+                let mut position_information: Option<types::TbfHeaderV2Position> = None;
 
                 // Iterate the remainder of the header looking for TLV entries.
                 while remaining.len() > 0 {
@@ -273,6 +274,16 @@ pub fn parse_tbf_header(
                             }
                         }
 
+                        types::TbfHeaderTypes::TbfHeaderPosition => {
+                            let entry_len = mem::size_of::<types::TbfHeaderV2ShortId>();
+                            position_information = Some(
+                                remaining
+                                    .get(0..entry_len)
+                                    .ok_or(types::TbfParseError::NotEnoughFlash)?
+                                    .try_into()?,
+                            )
+                        }
+
                         _ => {}
                     }
 
@@ -297,6 +308,7 @@ pub fn parse_tbf_header(
                     storage_permissions: storage_permissions_pointer,
                     kernel_version,
                     short_id,
+                    position_information,
                 };
 
                 Ok(types::TbfHeader::TbfHeaderV2(tbf_header))

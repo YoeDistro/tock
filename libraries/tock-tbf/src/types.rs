@@ -269,16 +269,15 @@ pub enum TbfHeaderV2PositionInformation {
     /// - https://mypages.iar.com/s/article/Position-independent-code-and-data-ROPI-and-RWPI?language=en_US
     RopiRwpi,
 
-    /// This app is compiled without position independence.
-    ///
-    /// This app must be located at the specified addresses in both flash and
-    /// RAM.
-    ///
-    /// If this header and the `TbfHeaderFixedAddresses` headers are both
-    /// present, this header takes precedence and the `TbfHeaderFixedAddresses`
-    /// header is ignored.
-    FixedAddresses(TbfHeaderV2FixedAddresses),
-
+    // /// This app is compiled without position independence.
+    // ///
+    // /// This app must be located at the specified addresses in both flash and
+    // /// RAM.
+    // ///
+    // /// If this header and the `TbfHeaderFixedAddresses` headers are both
+    // /// present, this header takes precedence and the `TbfHeaderFixedAddresses`
+    // /// header is ignored.
+    // FixedAddresses(TbfHeaderV2FixedAddresses),
     /// This app is compiled with "standard" PIC where the code and data must be
     /// a fixed offset.
     ///
@@ -289,7 +288,7 @@ pub enum TbfHeaderV2PositionInformation {
     /// The kernel will not do any copying and the application must be able to
     /// execute from its flash region initially before jumping to execute from
     /// its RAM region.
-    FixedOffset,
+    Pie,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -642,19 +641,24 @@ impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Position {
 
         let position_mode = match postion_mode_id {
             0 => TbfHeaderV2PositionInformation::RopiRwpi,
-            1 => TbfHeaderV2PositionInformation::FixedAddresses(TbfHeaderV2FixedAddresses {
-                start_process_ram: u32::from_le_bytes(
-                    b.get(0..4)
-                        .ok_or(TbfParseError::NotEnoughFlash)?
-                        .try_into()?,
-                ),
-                start_process_flash: u32::from_le_bytes(
-                    b.get(4..8)
-                        .ok_or(TbfParseError::NotEnoughFlash)?
-                        .try_into()?,
-                ),
-            }),
-            2 => TbfHeaderV2PositionInformation::FixedOffset,
+            1 => TbfHeaderV2PositionInformation::Pie,
+            // 1 => TbfHeaderV2PositionInformation::FixedAddresses(TbfHeaderV2FixedAddresses {
+            //     start_process_ram: u32::from_le_bytes(
+            //         b.get(0..4)
+            //             .ok_or(TbfParseError::NotEnoughFlash)?
+            //             .try_into()?,
+            //     ),
+            //     start_process_flash: u32::from_le_bytes(
+            //         b.get(4..8)
+            //             .ok_or(TbfParseError::NotEnoughFlash)?
+            //             .try_into()?,
+            //     ),
+            // }),
+            // 2 => TbfHeaderV2PositionInformation::FixedOffset(u32::from_le_bytes(
+            //     b.get(0..4)
+            //         .ok_or(TbfParseError::NotEnoughFlash)?
+            //         .try_into()?,
+            // )),
             _ => TbfHeaderV2PositionInformation::RopiRwpi,
         };
 
@@ -737,6 +741,7 @@ pub struct TbfHeaderV2<'a> {
     pub(crate) storage_permissions: Option<&'a [u8]>,
     pub(crate) kernel_version: Option<TbfHeaderV2KernelVersion>,
     pub(crate) short_id: Option<TbfHeaderV2ShortId>,
+    pub(crate) position_information: Option<TbfHeaderV2Position>,
 }
 
 /// Type that represents the fields of the Tock Binary Format header.
@@ -908,6 +913,15 @@ impl<'a> TbfHeader<'a> {
             0xFFFFFFFF => None,
             start => Some(start),
         }
+    }
+
+    pub fn get_position_information(&self) -> Option<TbfHeaderV2PositionInformation> {
+        let hd = match self {
+            TbfHeader::TbfHeaderV2(hd) => hd,
+            _ => return None,
+        };
+        let position: TbfHeaderV2Position = hd.position_information?.try_into().ok()?;
+        Some(position.configuration)
     }
 
     /// Get the address in flash this process was specifically compiled for. If
