@@ -40,6 +40,7 @@ use crate::utilities::capability_ptr::{CapabilityPtr, CapabilityPtrPermissions};
 use crate::utilities::cells::{MapCell, NumericCellExt, OptionalCell};
 
 use tock_tbf::types::CommandPermissions;
+use tock_tbf::types::TbfHeaderV2PositionInformation;
 
 /// Interface supported by [`ProcessStandard`] for recording debug information.
 ///
@@ -1680,6 +1681,27 @@ impl<C: 'static + Chip, D: 'static + ProcessStandardDebug> ProcessStandard<'_, C
             remaining_memory
         };
 
+        // Check if this app is fully position-independent or not. If this is
+        // Ropi-Rwpi, then it is fully position-independent and the process
+        // will execute from flash and only read-write its RAM. If this app
+        // uses some other position-dependent layout.
+        let app_region_permissions = match pb.header.get_position_information() {
+            Some(TbfHeaderV2PositionInformation::RopiRwpi) => {
+                // The app can run at any address we compile it for. We do not
+                // need to execute from memory.
+                mpu::Permissions::ReadWriteOnly
+            }
+            Some(TbfHeaderV2PositionInformation::Pie) => {
+                // The app will need to copy its text region to RAM and execute
+                // from there.
+                mpu::Permissions::ReadWriteExecute
+            }
+            None => {
+                // This app did not specify so we default to just read/write.
+                mpu::Permissions::ReadWriteOnly
+            }
+        };
+
         // Determine where process memory will go and allocate an MPU region.
         //
         // `[allocation_start, allocation_size)` will cover both
@@ -1696,7 +1718,7 @@ impl<C: 'static + Chip, D: 'static + ProcessStandardDebug> ProcessStandard<'_, C
             min_total_memory_size,
             min_process_memory_size,
             initial_kernel_memory_size,
-            mpu::Permissions::ReadWriteOnly,
+            app_region_permissions,
             &mut mpu_config,
         ) {
             Some((memory_start, memory_size)) => (memory_start, memory_size),
