@@ -11,5 +11,17 @@ include = [
 [build]
 target = "riscv32imac-unknown-none-elf"
 
+[target.riscv32imac-unknown-none-elf]
+runner = ["qemu-system-riscv32",
+          "-machine", "virt",
+          "-semihosting",
+          "-global", "driver=riscv-cpu,property=smepmp,value=true",
+          "-global", "virtio-mmio.force-legacy=false",
+          "-device", "virtio-rng-device",
+          "-device", "virtio-keyboard-device",
+          "-device", "virtio-gpu-device",
+          "-serial", "stdio",
+          "-bios", "qemu_rv32_virt.bin"]
+
 [unstable]
 config-include = true
