@@ -83,7 +83,7 @@ LOCAL_BOARD_BINARY := $(call s+,$(shell tockloader local-board path))
 # Set this as the default local board to write apps to with tockloader
 .PHONY: init
 init:
-	tockloader set-local-board qemu_rv32_virt
+	tockloader local-board set qemu_rv32_virt
 
 # Write the kernel to the flash file with tockloader
 .PHONY: install
