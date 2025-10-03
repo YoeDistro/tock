@@ -43,7 +43,20 @@
 //!        }
 //!        buf.len()
 //!    }
-//! }
+//!
+//!    fn available_len(&self) -> usize {
+//!        usize::MAX
+//!    }
+//!
+//!    fn to_write_len(&self) -> usize {
+//!        0
+//!    }
+//!
+//!    fn publish(&self) -> usize {
+//!        0
+//!    }
+//!
+//!    fn flush(&self, _writer: &mut dyn IoWrite) { }
 //! ```
 //! And instantiate it in the main board file:
 //!
@@ -340,8 +353,12 @@ pub trait DebugWriter {
 
     /// Available length of the internal buffer if limited.
     ///
-    /// If the buffer can support a write of any size, this returns `None`.
-    fn available_len(&self) -> Option<usize>;
+    /// If the buffer can support a write of any size, it should lie and return
+    /// `usize::MAX`.
+    ///
+    /// Across subsequent calls to this function, without invoking `write()` in
+    /// between, this returned value may only increase, but never decrease.
+    fn available_len(&self) -> usize;
 
     /// How many bytes are buffered and not yet written.
     fn to_write_len(&self) -> usize;
@@ -351,7 +368,10 @@ pub trait DebugWriter {
     /// Returns how many bytes were written.
     fn publish(&self) -> usize;
 
-    /// Flush any buffered bytes to the output writer.
+    /// Flush any buffered bytes to the provided output writer.
+    ///
+    /// `flush()` should be used to write an buffered bytes to a new `writer`
+    /// instead of the internal writer that `publish()` would use.
     fn flush(&self, writer: &mut dyn IoWrite);
 }
 /// Wrapper type that we need a mutable reference to for the
@@ -502,8 +522,8 @@ impl DebugWriter for UartDebugWriter {
         });
     }
 
-    fn available_len(&self) -> Option<usize> {
-        Some(self.internal_buffer.map_or(0, |rb| rb.available_len()))
+    fn available_len(&self) -> usize {
+        self.internal_buffer.map_or(0, |rb| rb.available_len())
     }
 
     fn to_write_len(&self) -> usize {
@@ -535,7 +555,7 @@ impl DebugWriterWrapper {
 
     fn available_len(&self) -> usize {
         self.dw
-            .map_or(0, |dw| dw.available_len().unwrap_or(0))
+            .map_or(0, |dw| dw.available_len())
             .saturating_sub(Self::FULL_MSG.len())
     }
 
