@@ -68,6 +68,7 @@ type RngDriver = components::rng::RngComponentType<esp32_c3::rng::Rng<'static>>;
 type GpioHw = esp32::gpio::GpioPin<'static>;
 type LedHw = components::sk68xx::Sk68xxLedComponentType<GpioHw, 3>;
 type LedDriver = components::led::LedsComponentType<LedHw, 3>;
+type ButtonDriver = components::button::ButtonComponentType<GpioHw>;
 
 /// A structure representing this platform that holds references to all
 /// capsules for this platform. We've included an alarm and console.
@@ -82,6 +83,7 @@ struct Esp32C3Board {
     scheduler_timer: &'static VirtualSchedulerTimer<esp32_c3::timg::TimG<'static>>,
     rng: &'static RngDriver,
     led: &'static LedDriver,
+    button: &'static ButtonDriver,
 }
 
 /// Mapping of integer syscalls to objects that implement syscalls.
@@ -96,6 +98,7 @@ impl SyscallDriverLookup for Esp32C3Board {
             capsules_core::alarm::DRIVER_NUM => f(Some(self.alarm)),
             capsules_core::rng::DRIVER_NUM => f(Some(self.rng)),
             capsules_core::led::DRIVER_NUM => f(Some(self.led)),
+            capsules_core::button::DRIVER_NUM => f(Some(self.button)),
             _ => f(None),
         }
     }
@@ -282,6 +285,25 @@ unsafe fn setup() -> (
     ));
 
     //
+    // BUTTONS
+    //
+
+    let button_boot_gpio = &peripherals.gpio[9];
+    let button = components::button::ButtonComponent::new(
+        board_kernel,
+        capsules_core::button::DRIVER_NUM,
+        components::button_component_helper!(
+            GpioHw,
+            (
+                button_boot_gpio,
+                kernel::hil::gpio::ActivationMode::ActiveLow,
+                kernel::hil::gpio::FloatingState::PullUp
+            )
+        ),
+    )
+    .finalize(components::button_component_static!(GpioHw));
+
+    //
     // SCHEDULER
     //
 
@@ -368,6 +390,7 @@ unsafe fn setup() -> (
             scheduler_timer,
             rng,
             led,
+            button
         }
     );
 
