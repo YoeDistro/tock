@@ -80,7 +80,7 @@ mod switch_to_user;
 #[cfg(target_arch = "x86")]
 mod return_from_user;
 
-extern "C" {
+extern "cdecl" {
     /// Performs a context switch to the given process.
     ///
     /// See _switch_to_user.s_ for complete details.
