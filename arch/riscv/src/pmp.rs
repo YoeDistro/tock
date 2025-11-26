@@ -969,15 +969,11 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> kernel::pla
 
         // Region start always has to align to 4 bytes. Round up to a 4 byte
         // boundary if required:
-        if !start.is_multiple_of(4) {
-            start += 4 - (start % 4);
-        }
+        start = start.next_multiple_of(4);
 
         // Region size always has to align to 4 bytes. Round up to a 4 byte
         // boundary if required:
-        if !size.is_multiple_of(4) {
-            size += 4 - (size % 4);
-        }
+        size = size.next_multiple_of(4);
 
         // Regions must be at least 4 bytes in size.
         if size < 4 {
@@ -1101,15 +1097,11 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> kernel::pla
 
         // Region start always has to align to 4 bytes. Round up to a 4 byte
         // boundary if required:
-        if !start.is_multiple_of(4) {
-            start += 4 - (start % 4);
-        }
+        start = start.next_multiple_of(4);
 
         // Region size always has to align to 4 bytes. Round up to a 4 byte
         // boundary if required:
-        if !pmp_region_size.is_multiple_of(4) {
-            pmp_region_size += 4 - (pmp_region_size % 4);
-        }
+        pmp_region_size = pmp_region_size.next_multiple_of(4);
 
         // Regions must be at least 4 bytes in size.
         if pmp_region_size < 4 {
@@ -1178,9 +1170,7 @@ impl<const MAX_REGIONS: usize, P: TORUserPMP<MAX_REGIONS> + 'static> kernel::pla
         // Ensure that the requested app_memory_break complies with PMP
         // alignment constraints, namely that the region's end address is 4 byte
         // aligned:
-        if !app_memory_break.is_multiple_of(4) {
-            app_memory_break += 4 - (app_memory_break % 4);
-        }
+        app_memory_break = app_memory_break.next_multiple_of(4);
 
         // Check if the app has run out of memory:
         if app_memory_break > kernel_memory_break {
