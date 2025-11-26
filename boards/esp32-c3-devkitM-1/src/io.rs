@@ -9,10 +9,6 @@ use core::str;
 use kernel::debug;
 use kernel::debug::IoWrite;
 
-use crate::CHIP;
-use crate::PROCESSES;
-use crate::PROCESS_PRINTER;
-
 struct Writer {}
 
 static mut WRITER: Writer = Writer {};
@@ -66,9 +62,7 @@ pub unsafe fn panic_fmt(pi: &PanicInfo) -> ! {
         writer,
         pi,
         &rv32i::support::nop,
-        PROCESSES.unwrap().as_slice(),
-        &*addr_of!(CHIP),
-        &*addr_of!(PROCESS_PRINTER),
+        crate::PANIC_RESOURCES.get(),
     );
 
     let _ = writeln!(writer, "{}", pi);
