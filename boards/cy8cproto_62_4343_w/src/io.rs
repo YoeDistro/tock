@@ -11,10 +11,6 @@ use psoc62xa::scb::Scb;
 use kernel::debug::{self, IoWrite};
 use kernel::hil::led::LedHigh;
 
-use crate::CHIP;
-use crate::PROCESSES;
-use crate::PROCESS_PRINTER;
-
 /// Writer is used by kernel::debug to panic message to the serial port.
 pub struct Writer {
     scb: OptionalCell<&'static Scb<'static>>,
@@ -57,8 +53,6 @@ pub unsafe fn panic_fmt(panic_info: &PanicInfo) -> ! {
         writer,
         panic_info,
         &cortexm0p::support::nop,
-        PROCESSES.unwrap().as_slice(),
-        &*addr_of!(CHIP),
-        &*addr_of!(PROCESS_PRINTER),
+        crate::PANIC_RESOURCES.get(),
     );
 }
