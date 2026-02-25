@@ -125,6 +125,9 @@ version = "0.2.3-dev"
 authors = ["Tock Project Developers <devel@lists.tockos.org>"]
 edition = "2021"
 
+[workspace.dependencies]
+tock-registers = { version = "0.10.0", default-features = false }
+
 [profile.dev]
 panic = "abort"
 lto = true
