@@ -18,7 +18,7 @@ use crate::collections::ring_buffer::RingBuffer;
 ///
 /// See also the tracking issue:
 /// <https://github.com/rust-lang/rfcs/issues/2262>.
-pub trait IoWrite: core::fmt::Write {
+pub trait IoWrite {
     fn write(&mut self, buf: &[u8]) -> usize;
 
     fn write_ring_buffer(&mut self, buf: &RingBuffer<'_, u8>) -> usize {

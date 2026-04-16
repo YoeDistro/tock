@@ -400,7 +400,7 @@ impl core::fmt::Write for RttPanicWriter<'_> {
 impl<'a> kernel::platform::chip::PanicWriter for SeggerRttMemory<'a> {
     type Config = &'a SeggerRttMemory<'a>;
 
-    unsafe fn create_panic_writer(config: Self::Config) -> impl IoWrite {
+    unsafe fn create_panic_writer(config: Self::Config) -> impl IoWrite + core::fmt::Write {
         RttPanicWriter { inner: config }
     }
 }
