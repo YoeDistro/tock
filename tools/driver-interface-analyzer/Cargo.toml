@@ -1,0 +1,17 @@
+# Licensed under the Apache License, Version 2.0 or the MIT License.
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Copyright Tock Contributors 2024.
+
+[package]
+name = "tock-driver-interface-analyzer"
+version = "0.1.0"
+edition = "2021"
+authors.workspace = true
+description = "Analyzes Tock OS SyscallDriver implementations to record their userspace interface"
+
+[[bin]]
+name = "driver-interface-analyzer"
+path = "src/main.rs"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit"] }
