@@ -187,12 +187,10 @@ pub unsafe fn start() -> (
     }
     // ---------- BASIC INITIALIZATION -----------
 
-    PANIC_RESOURCES
+    let _ = PANIC_RESOURCES
         .bind_to_thread::<<ChipHw as kernel::platform::chip::Chip>::ThreadIdProvider>(
             PanicResources::new(),
-        )
-        .map_err(|_| ())
-        .unwrap();
+        );
 
     // Basic setup of the RISC-V IMAC platform
     rv32i::configure_trap_handler();

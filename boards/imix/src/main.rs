@@ -324,12 +324,10 @@ unsafe fn start() -> (
     >();
 
     // Bind global variables to this thread.
-    PANIC_RESOURCES
+    let _ = PANIC_RESOURCES
         .bind_to_thread::<<ChipHw as kernel::platform::chip::Chip>::ThreadIdProvider>(
             PanicResources::new(),
-        )
-        .map_err(|_| ())
-        .unwrap();
+        );
 
     let pm = static_init!(sam4l::pm::PowerManager, sam4l::pm::PowerManager::new());
     let peripherals = static_init!(Sam4lDefaultPeripherals, Sam4lDefaultPeripherals::new(pm));
