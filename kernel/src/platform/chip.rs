@@ -184,6 +184,10 @@ pub const NO_CLOCK_CONTROL: NoClockControl = NoClockControl {};
 /// [`PanicWriter`] to enable the `panic()` functions to write the output. This
 /// requires the mechanism to provide a new constructor for the writer that
 /// creates a synchronous writer that implements [`IoWrite`].
+///
+/// This is a dedicated trait because synchronous I/O is only used for panic
+/// handling. This allows chips to clearly separate synchronous implementations
+/// that are a special case only for panics.
 pub trait PanicWriter {
     /// The configuration data the mechanism needs to configure the writer for
     /// panic output.
@@ -191,9 +195,7 @@ pub trait PanicWriter {
 
     /// Create a new synchronous writer capable of sending panic messages.
     ///
-    /// The constructed writer must be created on the stack. Because panic
-    /// will never return this is effectively a static allocation.
-    ///
-    /// The writer must implement [`IoWrite`].
+    /// The writer must implement [`IoWrite`] (which is just `std:io::Write`
+    /// implemented for no_std).
     unsafe fn create_panic_writer(config: Self::Config) -> impl IoWrite;
 }
