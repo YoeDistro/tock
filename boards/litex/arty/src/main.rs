@@ -220,12 +220,10 @@ unsafe fn start() -> (
     >();
 
     // Bind global variables to this thread.
-    PANIC_RESOURCES
+    let _ = PANIC_RESOURCES
         .bind_to_thread_unsafe::<<ChipHw as kernel::platform::chip::Chip>::ThreadIdProvider>(
             PanicResources::new(),
-        )
-        .map_err(|_| ())
-        .unwrap();
+        );
 
     // Set up memory protection immediately after setting the trap handler, to
     // ensure that much of the board initialization routine runs with PMP kernel

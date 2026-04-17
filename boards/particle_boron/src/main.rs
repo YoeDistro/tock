@@ -223,12 +223,10 @@ pub unsafe fn start_particle_boron() -> (
     >();
 
     // Bind global variables to this thread.
-    PANIC_RESOURCES
+    let _ = PANIC_RESOURCES
         .bind_to_thread::<<ChipHw as kernel::platform::chip::Chip>::ThreadIdProvider>(
             PanicResources::new(),
-        )
-        .map_err(|_| ())
-        .unwrap();
+        );
 
     let nrf52840_peripherals = create_peripherals();
 

@@ -245,12 +245,10 @@ unsafe fn start() -> (
     >();
 
     // Bind global variables to this thread.
-    PANIC_RESOURCES
+    let _ = PANIC_RESOURCES
         .bind_to_thread::<<ChipHw as kernel::platform::chip::Chip>::ThreadIdProvider>(
             PanicResources::new(),
-        )
-        .map_err(|_| ())
-        .unwrap();
+        );
 
     let ccm = static_init!(imxrt1050::ccm::Ccm, imxrt1050::ccm::Ccm::new());
     let peripherals = static_init!(
