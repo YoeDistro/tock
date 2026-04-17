@@ -2018,8 +2018,9 @@ impl<C: 'static + Chip, D: 'static + ProcessStandardDebug> ProcessStandard<'_, C
         //
         // TODO: https://github.com/tock/tock/issues/1739
         #[allow(clippy::cast_ptr_alignment)]
-        // Set up ring buffer for upcalls to the process.
-        let upcall_buf: *mut Task = kernel_memory_break.cast();
+        // Set up ring buffer for upcalls to the process. The memory is uninitialized here,
+        // so we cast to MaybeUninit<Task> which accurately represents that state.
+        let upcall_buf: *mut core::mem::MaybeUninit<Task> = kernel_memory_break.cast();
         let upcall_buf = slice::from_raw_parts_mut(upcall_buf, Self::CALLBACK_LEN);
         let tasks = RingBuffer::new(upcall_buf);
 
