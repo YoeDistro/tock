@@ -11,7 +11,6 @@
 //! * Date: March 10 2018
 
 use core::cell::Cell;
-// use core::cmp::min;
 use kernel::hil::uart;
 use kernel::utilities::cells::{MapCell, OptionalCell};
 use kernel::utilities::dma_slice::DmaSubSliceMut;
@@ -230,11 +229,6 @@ impl UarteRegistersManager {
 
             (buf, tx_bytes)
         })
-
-        // let rem = match self.tx_remaining_bytes.get().checked_sub(tx_bytes) {
-        //     None => return,
-        //     Some(r) => r,
-        // };
     }
 
     pub fn tx_dma_pending(&self) -> bool {
@@ -415,6 +409,13 @@ impl<'a> Uarte<'a> {
             if let Some((mut buf, transmitted_length)) = self.registers.finish_tx_dma() {
                 let active_range = buf.active_range();
 
+                // Calculate the remaining bytes to transmit based on the length to
+                // transmit, the window we just tried to transmit, and how many
+                // bytes we actually did transmit.
+                //
+                // <-----buffer------------------->
+                //          <-active range->
+                // [        [              ]      ]
                 let remaining_bytes = self
                     .tx_len
                     .get()
@@ -422,6 +423,7 @@ impl<'a> Uarte<'a> {
                     .saturating_sub(transmitted_length);
 
                 if remaining_bytes == 0 {
+                    // We sent everything.
                     self.tx_client.map(|client| {
                         client.transmitted_buffer(buf.take(), self.tx_len.get(), Ok(()));
                     });
@@ -433,41 +435,15 @@ impl<'a> Uarte<'a> {
                     // Limit to just the portion of the buffer we are transmitting from.
                     buf.slice(0..self.tx_len.get());
                     // Skip what has already been transmitted.
-                    buf.slice(active_range.end..);
+                    buf.slice((self.tx_len.get() - remaining_bytes)..);
                     // Limit to at most the `UARTE_MAX_BUFFER_SIZE` bytes.
                     buf.slice(0..UARTE_MAX_BUFFER_SIZE);
                     // Send via DMA.
                     self.registers.start_tx_dma(buf);
+                    // Re-enable interrupts.
+                    self.enable_tx_interrupts();
                 }
             }
-
-            // self.registers.event_endtx.write(Event::READY::CLEAR);
-            // let tx_bytes = self.registers.txd_amount.get() as usize;
-
-            // let rem = match self.tx_remaining_bytes.get().checked_sub(tx_bytes) {
-            //     None => return,
-            //     Some(r) => r,
-            // };
-
-            // // All bytes have been transmitted
-            // if rem == 0 {
-            //     // Signal client write done
-            //     self.tx_client.map(|client| {
-            //         self.tx_buffer.take().map(|tx_buffer| {
-            //             client.transmitted_buffer(tx_buffer, self.tx_len.get(), Ok(()));
-            //         });
-            //     });
-            // } else {
-            //     // Not all bytes have been transmitted then update offset and continue transmitting
-            //     self.offset.set(self.offset.get() + tx_bytes);
-            //     self.tx_remaining_bytes.set(rem);
-            //     self.set_tx_dma_pointer_to_buffer();
-            //     self.registers
-            //         .txd_maxcnt
-            //         .write(Counter::COUNTER.val(min(rem as u32, UARTE_MAX_BUFFER_SIZE)));
-            //     self.registers.task_starttx.write(Task::ENABLE::SET);
-            //     self.enable_tx_interrupts();
-            // }
         }
 
         if self.rx_ready() {
@@ -585,15 +561,22 @@ impl<'a> Uarte<'a> {
 
     // Helper function used by both transmit_word and transmit_buffer
     fn setup_buffer_transmit(&self, buf: &'static mut [u8], tx_len: usize) {
-        // self.tx_remaining_bytes.set(tx_len);
+        // Save the total length to transmit as we may need to send over
+        // multiple iterations.
         self.tx_len.set(tx_len);
-        // self.offset.set(0);
 
+        // Create a `SubSlice` to simplify tracking which part we are sending,
+        // and slice the sub slice to either the total buffer to send or what
+        // fits in one send buffer.
         let mut slice_to_send = SubSliceMut::new(buf);
-        slice_to_send.slice(0..UARTE_MAX_BUFFER_SIZE);
+        slice_to_send.slice(0..core::cmp::min(tx_len, UARTE_MAX_BUFFER_SIZE));
 
+        // Send the buffer using DMA. This is managed by the register manager to
+        // ensure we are safely using DMA.
         self.registers.start_tx_dma(slice_to_send);
 
+        // Enable interrupts so we get a interrupt when the transmission has
+        // finished.
         self.enable_tx_interrupts();
     }
 }
