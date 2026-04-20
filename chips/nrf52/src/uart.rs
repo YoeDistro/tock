@@ -234,6 +234,62 @@ impl UarteRegistersManager {
     pub fn tx_dma_pending(&self) -> bool {
         self.tx_dma_buf.is_some()
     }
+
+    pub fn start_rx_dma(&self, buf: SubSliceMut<'static, u8>) {
+        // To create a DmaFence we must trust the implementation.
+        //
+        // # Safety
+        //
+        // The architecture-provided version is correct for the nRF52.
+        let fence = unsafe { cortexm4f::dma_fence::CortexMDmaFence::new() };
+
+        // Create DmaSlice for the RX buffer. This ensures that we can soundly
+        // share it with the DMA hardware.
+        let rx_dma_slice = DmaSubSliceMut::new(buf, fence);
+
+        // Provide the DmaSlice buffer to the hardware DMA engine.
+        self.registers.rxd_ptr.set(rx_dma_slice.as_mut_ptr() as u32);
+
+        // Specify the length to transmit.
+        self.registers
+            .rxd_maxcnt
+            .write(Counter::COUNTER.val(rx_dma_slice.len() as u32));
+
+        // Save the DmaSlice while the DMA operation executes.
+        self.rx_dma_buf.replace(rx_dma_slice);
+
+        // Start the RX DMA operation
+        self.registers.task_startrx.write(Task::ENABLE::SET);
+    }
+
+    pub fn finish_rx_dma(&self) -> Option<(SubSliceMut<'static, u8>, usize)> {
+        // End the DMA operation so it is safe to retrieve the buffer.
+        self.registers.event_endrx.write(Event::READY::CLEAR);
+
+        self.rx_dma_buf.take().map(|dma_slice| {
+            // To create a DmaFence we must trust the implementation.
+            //
+            // # Safety
+            //
+            // The architecture-provided version is correct for the nRF52.
+            let fence = unsafe { cortexm4f::dma_fence::CortexMDmaFence::new() };
+
+            // # Safety
+            //
+            // We must ensure that the DMA hardware no longer has any access
+            // to this buffer. We ensure that by setting the `event_endrx`
+            // event before taking the dma slice back.
+            let buf = unsafe { dma_slice.take(fence) };
+
+            let rx_bytes = self.registers.rxd_amount.get() as usize;
+
+            (buf, rx_bytes)
+        })
+    }
+
+    pub fn rx_dma_pending(&self) -> bool {
+        self.rx_dma_buf.is_some()
+    }
 }
 
 /// UARTE
@@ -246,10 +302,8 @@ pub struct Uarte<'a> {
     tx_len: Cell<usize>,
     // tx_remaining_bytes: Cell<usize>,
     rx_client: OptionalCell<&'a dyn uart::ReceiveClient>,
-    rx_buffer: kernel::utilities::cells::TakeCell<'static, [u8]>,
-    rx_remaining_bytes: Cell<usize>,
+    rx_len: Cell<usize>,
     rx_abort_in_progress: Cell<bool>,
-    offset: Cell<usize>,
 }
 
 #[derive(Copy, Clone)]
@@ -268,10 +322,8 @@ impl<'a> Uarte<'a> {
             tx_len: Cell::new(0),
             // tx_remaining_bytes: Cell::new(0),
             rx_client: OptionalCell::empty(),
-            rx_buffer: kernel::utilities::cells::TakeCell::empty(),
-            rx_remaining_bytes: Cell::new(0),
+            rx_len: Cell::new(0),
             rx_abort_in_progress: Cell::new(false),
-            offset: Cell::new(0),
         }
     }
 
@@ -455,62 +507,70 @@ impl<'a> Uarte<'a> {
                 .event_endrx
                 .write(Event::READY::CLEAR);
 
-            // Get the number of bytes in the buffer that was received this time
-            let rx_bytes = self.registers.registers.rxd_amount.get() as usize;
+            if let Some((mut buf, received_length)) = self.registers.finish_rx_dma() {
+                let active_range = buf.active_range();
 
-            // Check if this ENDRX is due to an abort. If so, we want to
-            // do the receive callback immediately.
-            if self.rx_abort_in_progress.get() {
-                self.rx_abort_in_progress.set(false);
-                self.rx_client.map(|client| {
-                    self.rx_buffer.take().map(|rx_buffer| {
+                // Check if this ENDRX is due to an abort. If so, we want to
+                // do the receive callback immediately.
+                if self.rx_abort_in_progress.get() {
+                    self.rx_abort_in_progress.set(false);
+
+                    // Calculate how many bytes we actually received.
+                    let received_bytes = active_range.start + received_length;
+
+                    // Notify the client.
+                    self.rx_client.map(|client| {
                         client.received_buffer(
-                            rx_buffer,
-                            self.offset.get() + rx_bytes,
+                            buf.take(),
+                            received_bytes,
                             Err(ErrorCode::CANCEL),
                             uart::Error::None,
                         );
                     });
-                });
-            } else {
-                // In the normal case, we need to either pass call the callback
-                // or do another read to get more bytes.
+                } else {
+                    // In the normal case, we need to either pass call the callback
+                    // or do another read to get more bytes.
 
-                // Update how many bytes we still need to receive and
-                // where we are storing in the buffer.
-                self.rx_remaining_bytes
-                    .set(self.rx_remaining_bytes.get().saturating_sub(rx_bytes));
-                self.offset.set(self.offset.get() + rx_bytes);
+                    // Calculate the remaining bytes to receive based on the length to
+                    // receive, the window we just tried to receive into, and how many
+                    // bytes we actually did receive.
+                    //
+                    //
+                    // <-----buffer------------------->
+                    //          <-active range->
+                    // [        [              ]      ]
+                    let remaining_bytes = self
+                        .rx_len
+                        .get()
+                        .saturating_sub(active_range.start)
+                        .saturating_sub(received_length);
 
-                let rem = self.rx_remaining_bytes.get();
-                if rem == 0 {
-                    // Signal client that the read is done
-                    self.rx_client.map(|client| {
-                        self.rx_buffer.take().map(|rx_buffer| {
+                    if remaining_bytes == 0 {
+                        // Signal client that the read is done
+                        self.rx_client.map(|client| {
                             client.received_buffer(
-                                rx_buffer,
-                                self.offset.get(),
+                                buf.take(),
+                                self.rx_len.get(),
                                 Ok(()),
                                 uart::Error::None,
                             );
                         });
-                    });
-                } else {
-                    // Setup how much we can read. We already made sure that
-                    // this will fit in the buffer.
-                    let to_read = core::cmp::min(rem, 255);
-                    self.registers
-                        .registers
-                        .rxd_maxcnt
-                        .write(Counter::COUNTER.val(to_read as u32));
+                    } else {
+                        // Receive into the next portion of the buffer.
 
-                    // Actually do the receive.
-                    self.set_rx_dma_pointer_to_buffer();
-                    self.registers
-                        .registers
-                        .task_startrx
-                        .write(Task::ENABLE::SET);
-                    self.enable_rx_interrupts();
+                        // Reset back to the original slice.
+                        buf.reset();
+                        // Limit to just the portion of the buffer we are receiving into.
+                        buf.slice(0..self.rx_len.get());
+                        // Skip what has already been received.
+                        buf.slice((self.rx_len.get() - remaining_bytes)..);
+                        // Limit to at most the `UARTE_MAX_BUFFER_SIZE` bytes.
+                        buf.slice(0..UARTE_MAX_BUFFER_SIZE);
+                        // Receive via DMA.
+                        self.registers.start_rx_dma(buf);
+                        // Re-enable interrupts.
+                        self.enable_rx_interrupts();
+                    }
                 }
             }
         }
@@ -550,15 +610,6 @@ impl<'a> Uarte<'a> {
         self.registers.registers.event_endrx.is_set(Event::READY)
     }
 
-    fn set_rx_dma_pointer_to_buffer(&self) {
-        self.rx_buffer.map(|rx_buffer| {
-            self.registers
-                .registers
-                .rxd_ptr
-                .set(rx_buffer[self.offset.get()..].as_ptr() as u32);
-        });
-    }
-
     // Helper function used by both transmit_word and transmit_buffer
     fn setup_buffer_transmit(&self, buf: &'static mut [u8], tx_len: usize) {
         // Save the total length to transmit as we may need to send over
@@ -578,6 +629,24 @@ impl<'a> Uarte<'a> {
         // Enable interrupts so we get a interrupt when the transmission has
         // finished.
         self.enable_tx_interrupts();
+    }
+
+    fn setup_buffer_receive(&self, buf: &'static mut [u8], rx_len: usize) {
+        // Save the total length to receive.
+        self.rx_len.set(rx_len);
+
+        // Create a `SubSlice` to simplify tracking which part we have received
+        // into.
+        let mut slice_to_receive = SubSliceMut::new(buf);
+        slice_to_receive.slice(0..core::cmp::min(rx_len, UARTE_MAX_BUFFER_SIZE));
+
+        // Use the buffer with DMA. This is managed by the register manager to
+        // ensure we are safely using DMA.
+        self.registers.start_rx_dma(slice_to_receive);
+
+        // Enable interrupts so we get a interrupt when the receive has
+        // finished.
+        self.enable_rx_interrupts();
     }
 }
 
@@ -640,34 +709,14 @@ impl<'a> uart::Receive<'a> for Uarte<'a> {
         rx_buf: &'static mut [u8],
         rx_len: usize,
     ) -> Result<(), (ErrorCode, &'static mut [u8])> {
-        if self.rx_buffer.is_some() {
-            return Err((ErrorCode::BUSY, rx_buf));
+        if rx_len > rx_buf.len() {
+            Err((ErrorCode::SIZE, rx_buf))
+        } else if self.registers.rx_dma_pending() {
+            Err((ErrorCode::BUSY, rx_buf))
+        } else {
+            self.setup_buffer_receive(rx_buf, rx_len);
+            Ok(())
         }
-        // truncate rx_len if necessary
-        let truncated_length = core::cmp::min(rx_len, rx_buf.len());
-
-        self.rx_remaining_bytes.set(truncated_length);
-        self.offset.set(0);
-        self.rx_buffer.replace(rx_buf);
-        self.set_rx_dma_pointer_to_buffer();
-
-        let truncated_uart_max_length = core::cmp::min(truncated_length, 255);
-
-        self.registers
-            .registers
-            .rxd_maxcnt
-            .write(Counter::COUNTER.val(truncated_uart_max_length as u32));
-        self.registers
-            .registers
-            .task_stoprx
-            .write(Task::ENABLE::SET);
-        self.registers
-            .registers
-            .task_startrx
-            .write(Task::ENABLE::SET);
-
-        self.enable_rx_interrupts();
-        Ok(())
     }
 
     fn receive_word(&self) -> Result<(), ErrorCode> {
@@ -676,7 +725,7 @@ impl<'a> uart::Receive<'a> for Uarte<'a> {
 
     fn receive_abort(&self) -> Result<(), ErrorCode> {
         // Trigger the STOPRX event to cancel the current receive call.
-        if self.rx_buffer.is_none() {
+        if !self.registers.rx_dma_pending() {
             Ok(())
         } else {
             self.rx_abort_in_progress.set(true);
