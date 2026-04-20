@@ -62,16 +62,19 @@ unsafe fn raw_processbuf_to_roprocessslice<'a>(
     ptr: *const u8,
     len: usize,
 ) -> &'a ReadableProcessSlice {
+    let ptr: *const ReadableProcessByte = ptr.cast();
+
+    // Transmute a slice reference over readable (read-only or read-write, and
+    // potentially aliased) bytes into a `ReadableProcessSlice` reference.
+    //
+    // # Safety
+    //
+    // This is sound, as `ReadableProcessSlice` is merely a
+    // `#[repr(transparent)]` wrapper around `[ReadableProcessByte]`. However,
+    // we cannot build this struct safely from an intermediate
+    // `[ReadableProcessByte]` slice reference, as we cannot dereference this
+    // unsized type.
     unsafe {
-        let ptr: *const ReadableProcessByte = ptr.cast();
-        // Transmute a slice reference over readable (read-only or read-write, and
-        // potentially aliased) bytes into a `ReadableProcessSlice` reference.
-        //
-        // This is sound, as `ReadableProcessSlice` is merely a
-        // `#[repr(transparent)]` wrapper around `[ReadableProcessByte]`. However,
-        // we cannot build this struct safely from an intermediate
-        // `[ReadableProcessByte]` slice reference, as we cannot dereference this
-        // unsized type.
         core::mem::transmute::<&[ReadableProcessByte], &ReadableProcessSlice>(
             // Create a slice of `ReadableProcessByte`s from the supplied
             // pointer. `ReadableProcessByte` itself permits interior mutability,
@@ -132,14 +135,16 @@ unsafe fn raw_processbuf_to_rwprocessslice<'a>(
     ptr: *mut u8,
     len: usize,
 ) -> &'a WriteableProcessSlice {
+    // Transmute a slice reference over writeable and potentially aliased bytes
+    // into a `WriteableProcessSlice` reference.
+    //
+    // # Safety
+    //
+    // This is sound, as `WriteableProcessSlice` is merely a
+    // `#[repr(transparent)]` wrapper around `[Cell<u8>]`. However, we cannot
+    // build this struct safely from an intermediate `[WriteableProcessByte]`
+    // slice reference, as we cannot dereference this unsized type.
     unsafe {
-        // Transmute a slice reference over writeable and potentially aliased bytes
-        // into a `WriteableProcessSlice` reference.
-        //
-        // This is sound, as `WriteableProcessSlice` is merely a
-        // `#[repr(transparent)]` wrapper around `[Cell<u8>]`. However, we cannot
-        // build this struct safely from an intermediate `[WriteableProcessByte]`
-        // slice reference, as we cannot dereference this unsized type.
         core::mem::transmute::<&[Cell<u8>], &WriteableProcessSlice>(
             // Create a slice of `Cell<u8>`s from the supplied pointer. `Cell<u8>`
             // itself permits interior mutability, and hence this intermediate
@@ -390,6 +395,9 @@ impl ReadOnlyProcessBuffer {
         process_id: ProcessId,
         _cap: &dyn capabilities::ExternalProcessCapability,
     ) -> Self {
+        // # Safety
+        //
+        // See function description.
         unsafe { Self::new(ptr, len, process_id) }
     }
 
@@ -487,6 +495,9 @@ impl ReadOnlyProcessBufferRef<'_> {
     /// help enforce the invariant that this incoming pointer may only
     /// be access for a certain duration.
     pub(crate) unsafe fn new(ptr: *const u8, len: usize, process_id: ProcessId) -> Self {
+        // # Safety
+        //
+        // See function description.
         unsafe {
             Self {
                 buf: ReadOnlyProcessBuffer::new(ptr, len, process_id),
@@ -578,6 +589,9 @@ impl ReadWriteProcessBuffer {
         process_id: ProcessId,
         _cap: &dyn capabilities::ExternalProcessCapability,
     ) -> Self {
+        // # Safety
+        //
+        // See function description.
         unsafe { Self::new(ptr, len, process_id) }
     }
 
@@ -726,6 +740,9 @@ impl ReadWriteProcessBufferRef<'_> {
     /// help enforce the invariant that this incoming pointer may only
     /// be access for a certain duration.
     pub(crate) unsafe fn new(ptr: *mut u8, len: usize, process_id: ProcessId) -> Self {
+        // # Safety
+        //
+        // See function description.
         unsafe {
             Self {
                 buf: ReadWriteProcessBuffer::new(ptr, len, process_id),
