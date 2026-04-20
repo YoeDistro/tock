@@ -361,9 +361,9 @@ impl<'b> VirtqueueDmaBuffer<'b> {
                     fence,
                 ))
             }
-            VirtqueueBuffer::DeviceWriteable(sub_slice_mut) => VirtqueueDmaBuffer::DeviceWriteable(
-                DmaSubSliceMut::new_unsafe(sub_slice_mut, fence),
-            ),
+            VirtqueueBuffer::DeviceWriteable(sub_slice_mut) => {
+                VirtqueueDmaBuffer::DeviceWriteable(DmaSubSliceMut::new(sub_slice_mut, fence))
+            }
         }
     }
 

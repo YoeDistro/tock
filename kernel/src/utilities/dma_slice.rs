@@ -181,8 +181,7 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSlice<'a, T> {
 ///
 /// # Safety Considerations
 ///
-/// Users **must** eventually call
-/// [`take`](Self::take) to retrieve the
+/// Users **must** eventually call [`take`](Self::take) to retrieve the
 /// underlying buffer. The [`DmaSliceMut`] must exist for the entire duration of
 /// the DMA operation. Users must never drop a [`DmaSliceMut`] with a
 /// non-`'static` lifetime, as this could provide access to the underlying
@@ -190,11 +189,10 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSlice<'a, T> {
 /// issuing a DMA memory fence to ensure that writes by the DMA operation are
 /// visible to Rust.
 ///
-/// [`take`](Self::take) must only be called
-/// after the DMA operation has been observed to be complete (such as through a
-/// memory or MMIO read). Callers must ensure that the hardware will not perform
-/// any further writes to the buffer at the point where
-/// [`restore_mut_slice_ref`](Self::restore_mut_slice_ref) is called.
+/// [`take`](Self::take) must only be called after the DMA operation has been
+/// observed to be complete (such as through a memory or MMIO read). Callers
+/// must ensure that the hardware will not perform any further writes to the
+/// buffer at the point where [`take`](Self::take) is called.
 ///
 /// Callers must further ensure that they start DMA operations only after
 /// constructing the [`DmaSliceMut`], and only in the memory region described by
@@ -229,9 +227,9 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSliceMut<'a, T
     ///
     /// Callers must ensure to not[`forget`](core::mem::forget) the returned
     /// [`DmaSliceMut`]. This could provide access to the underlying buffer
-    /// without guaranteeing that the DMA operation has finished.
-    /// Users **must** eventually call[`restore_mut_slice_ref`]
-    /// (Self::restore_mut_slice_ref) to retrieve the underlying buffer.
+    /// without guaranteeing that the DMA operation has finished.  Users
+    /// **must** eventually call [`take`](Self::take) to retrieve the underlying
+    /// buffer.
     #[must_use]
     pub unsafe fn new(slice: &mut [T], fence: impl DmaFence) -> DmaSliceMut<'_, T> {
         let dma_slice_mut = DmaSliceMut {
@@ -330,12 +328,12 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSliceMutImmut<
         // # Safety
         //
         // `DmaSliceMut::from_mut_slice_ref` is unsafe, as dropping its return
-        // value without calling `restore_mut_slice_ref` may make the underlying
-        // buffer accessible as a Rust slice, potentially before the DMA
-        // operation is complete, and without using `fence.acquire` to make DMA
-        // writes visible to Rust. However, this struct does not permit DMA
-        // operations which write to the slice, and hence it can be safely
-        // dropped without risk of concurrent modifications or incoherence.
+        // value without calling `take` may make the underlying buffer
+        // accessible as a Rust slice, potentially before the DMA operation is
+        // complete, and without using `fence.acquire` to make DMA writes
+        // visible to Rust. However, this struct does not permit DMA operations
+        // which write to the slice, and hence it can be safely dropped without
+        // risk of concurrent modifications or incoherence.
         DmaSliceMutImmut::Mutable(unsafe { DmaSliceMut::new(slice, fence) })
     }
 
@@ -410,7 +408,7 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSlice<'a, T
     /// writes to `slice` are exposed to any DMA operations initiated by an MMIO
     /// read or write operation after this function returns, and which finish
     /// before the resulting [`DmaSubSlice`] is dropped.
-    pub fn from_sub_slice(sub_slice: SubSlice<'_, T>, fence: impl DmaFence) -> DmaSubSlice<'_, T> {
+    pub fn new(sub_slice: SubSlice<'_, T>, fence: impl DmaFence) -> DmaSubSlice<'_, T> {
         // Ensure that all prior writes to this slice are exposed to any DMA
         // operations initiated by an MMIO read or write operation after this
         // function returns:
@@ -457,14 +455,13 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSlice<'a, T
 /// Rust writes to this slice's active range are observable by any DMA
 /// operations initiated through an MMIO write operation, where that MMIO write
 /// is performed **after** constructing the `DmaSubSliceMut`. All writes by the
-/// DMA operation will be observable by Rust when calling
-/// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut) **after** the DMA
-/// operation is finished.
+/// DMA operation will be observable by Rust when calling [`take`](Self::take)
+/// **after** the DMA operation is finished.
 ///
 /// # Safety
 ///
 /// Users **must** eventually call
-/// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut) to retrieve the
+/// [`take`](Self::take) to retrieve the
 /// underlying buffer. The [`DmaSubSliceMut`] must exist for the entire duration
 /// of the DMA operation. Users must never drop a [`DmaSubSliceMut`] with a
 /// non-`'static` lifetime, as this could provide access to the underlying
@@ -472,22 +469,22 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSlice<'a, T
 /// issuing a DMA memory fence to ensure that writes by the DMA operation are
 /// visible to Rust.
 ///
-/// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut) must only be called
+/// [`take`](Self::take) must only be called
 /// after the DMA operation has been observed to be complete (such as through a
 /// memory or MMIO read). Callers must ensure that the hardware will not perform
 /// any further writes to the buffer at the point where
-/// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut) is called.
+/// [`take`](Self::take) is called.
 ///
 /// Callers must further ensure that they start DMA operations only after
 /// constructing the [`DmaSubSliceMut`], and only in the memory region described
 /// by [`as_mut_ptr`](Self::as_mut_ptr) and [`len`](Self::len).
 ///
 /// Users are responsible to ensure that, after the DMA operation completes and
-/// before calling [`restore_mut_slice_ref`](Self::restore_sub_slice_mut), every
-/// element in the underlying slice represents a well-initialized and valid
-/// instance of its type (with the exception of padding bytes). See the
-/// [zerocopy crate](https://docs.rs/zerocopy/0.8.31/zerocopy/) for an more
-/// in-depth explanation of these requirements.
+/// before calling [`take`](Self::take), every element in the underlying slice
+/// represents a well-initialized and valid instance of its type (with the
+/// exception of padding bytes). See the [zerocopy
+/// crate](https://docs.rs/zerocopy/0.8.31/zerocopy/) for an more in-depth
+/// explanation of these requirements.
 #[derive(Debug)]
 pub struct DmaSubSliceMut<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> {
     internal_slice_ptr: NonNull<[T]>,
@@ -501,8 +498,7 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMut<'a
     /// This function uses the supplied `fence` object to ensure that all prior
     /// writes to the active region of `slice` are exposed to any DMA operations
     /// initiated by an MMIO read or write operation after this function
-    /// returns, and which finish before calling
-    /// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut).
+    /// returns, and which finish before calling [`take`](Self::take).
     ///
     /// # Safety
     ///
@@ -511,10 +507,9 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMut<'a
     /// This function is unsafe, as dropping or
     /// [`forget`](core::mem::forget)ting its return value is not allowed when
     /// the lifetime `'b` is not `'static`. Users **must** eventually call
-    /// [`restore_sub_slice_mut`](Self::restore_sub_slice_mut) to retrieve the
-    /// underlying buffer.
+    /// [`take`](Self::take) to retrieve the underlying buffer.
     #[must_use]
-    pub unsafe fn new_unsafe(
+    pub unsafe fn new(
         sub_slice_mut: SubSliceMut<'_, T>,
         fence: impl DmaFence,
     ) -> DmaSubSliceMut<'_, T> {
@@ -545,20 +540,20 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMut<'a
     /// This function uses the supplied `fence` object to ensure that all prior
     /// writes to `slice` are exposed to any DMA operations initiated by an MMIO
     /// read or write operation after this function returns, and which finish
-    /// before calling [`restore_sub_slice_mut`](Self::restore_sub_slice_mut).
+    /// before calling [`take`](Self::take).
     ///
     /// # Safety
     ///
     /// Refer the safety documentation of the [`DmaSubSliceMut`] type.
     ///
-    /// In contrast to [`from_sub_slice_mut`] this function is safe, as dropping
-    /// or forgetting its return value is safe, it would merely leak memory and
+    /// In contrast to [`new`](Self::new) this function is safe, as dropping or
+    /// forgetting its return value is safe, it would merely leak memory and
     /// make the underlying slice inaccessible.
-    pub fn new(
+    pub fn new_static(
         sub_slice: SubSliceMut<'static, T>,
         fence: impl DmaFence,
     ) -> DmaSubSliceMut<'static, T> {
-        unsafe { Self::new_unsafe(sub_slice, fence) }
+        unsafe { Self::new(sub_slice, fence) }
     }
 
     /// Returns the pointer to the first element of the active range of the
@@ -600,12 +595,11 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMut<'a
     ///
     /// Refer the safety documentation of the [`DmaSubSliceMut`] type.
     ///
-    /// In particular, [`restore_sub_slice_mut`](Self::restore_sub_slice_mut)
-    /// must only be called after the DMA operation has been observed to be
-    /// complete (such as through a memory or MMIO read). Callers must ensure
-    /// that the hardware will not perform any further writes to the buffer at
-    /// the point where [`restore_sub_slice_mut`](Self::restore_sub_slice_mut)
-    /// is called.
+    /// In particular, [`take`](Self::take) must only be called after the DMA
+    /// operation has been observed to be complete (such as through a memory or
+    /// MMIO read). Callers must ensure that the hardware will not perform any
+    /// further writes to the buffer at the point where [`take`](Self::take) is
+    /// called.
     pub unsafe fn take(mut self, fence: impl DmaFence) -> SubSliceMut<'a, T> {
         // Ensure that any reads from Rust to the active range of the buffer
         // (described by `self.as_mut_ptr()` and `self.len()`) _after_ this
@@ -631,7 +625,7 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMut<'a
     /// contents have not been modified by a DMA operation (i.e., any DMA
     /// operations operating on the buffer while this `DmaSubSliceMut` existed
     /// were read-only).
-    unsafe fn restore_sub_slice_mut_no_acquire(mut self) -> SubSliceMut<'a, T> {
+    unsafe fn take_no_acquire(mut self) -> SubSliceMut<'a, T> {
         // Restore the original `SubSliceMut` configuration:
         let mut sub_slice_mut = SubSliceMut::new(unsafe { self.internal_slice_ptr.as_mut() });
         sub_slice_mut.slice(self.active_range);
@@ -677,20 +671,20 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMutImm
     ) -> DmaSubSliceMutImmut<'_, T> {
         match sub_slice {
             SubSliceMutImmut::Immutable(sub_slice) => {
-                DmaSubSliceMutImmut::Immutable(DmaSubSlice::from_sub_slice(sub_slice, fence))
+                DmaSubSliceMutImmut::Immutable(DmaSubSlice::new(sub_slice, fence))
             }
             SubSliceMutImmut::Mutable(sub_slice_mut) => DmaSubSliceMutImmut::Mutable(unsafe {
                 // # Safety
                 //
-                // `DmaSubSliceMut::from_sub_slice_mut` is unsafe, as dropping
-                // its return value without calling `restore_sub_slice_mut` may
-                // make the underlying buffer accessible as a Rust slice,
-                // potentially before the DMA operation is complete, and without
-                // using `fence.acquire` to make DMA writes visible to
-                // Rust. However, this struct does not permit DMA operations
-                // which write to the slice, and hence it can be safely dropped
-                // without risk of concurrent modifications or incoherence.
-                DmaSubSliceMut::new_unsafe(sub_slice_mut, fence)
+                // `DmaSubSliceMut::new` is unsafe, as dropping its return value
+                // without calling `take` may make the underlying buffer
+                // accessible as a Rust slice, potentially before the DMA
+                // operation is complete, and without using `fence.acquire` to
+                // make DMA writes visible to Rust. However, this struct does
+                // not permit DMA operations which write to the slice, and hence
+                // it can be safely dropped without risk of concurrent
+                // modifications or incoherence.
+                DmaSubSliceMut::new(sub_slice_mut, fence)
             }),
         }
     }
@@ -734,10 +728,9 @@ impl<'a, T: immutable_from_into_bytes::ImmutableFromIntoBytes> DmaSubSliceMutImm
                 // The user guarantees that there has not been any DMA operation
                 // that changed the buffers contents while the
                 // `DmaSubSliceMutImmut` existed, and hence restoring a unique
-                // Rust slice through `restore_sub_slice_mut` is safe. No
-                // acquire-fence is needed, given the bufer contents have not
-                // been modified.
-                dma_sub_slice_mut.restore_sub_slice_mut_no_acquire()
+                // Rust slice through `take` is safe. No acquire-fence is
+                // needed, given the bufer contents have not been modified.
+                dma_sub_slice_mut.take_no_acquire()
             }),
         }
     }
@@ -858,7 +851,7 @@ mod miri_tests {
 
         // 1. Create DmaSliceMut
         //
-        // SAFETY: We call `restore_slice_ref` at the end.
+        // SAFETY: We call `take` at the end.
         let dma = unsafe { DmaSliceMut::new(&mut data, fence) };
 
         // 2. Verify basic pointer integrity
@@ -915,7 +908,7 @@ mod miri_tests {
         let mut sub = SubSlice::new(&data);
         sub.slice(1..=2);
 
-        let dma = DmaSubSlice::from_sub_slice(sub, fence);
+        let dma = DmaSubSlice::new(sub, fence);
         assert_eq!(dma.len(), 2);
 
         unsafe {
@@ -934,7 +927,7 @@ mod miri_tests {
         let mut sub = SubSliceMut::new(&mut data);
         sub.slice(2..4);
 
-        let dma = unsafe { DmaSubSliceMut::from_sub_slice_mut(sub, fence) };
+        let dma = unsafe { DmaSubSliceMut::new(sub, fence) };
         assert_eq!(dma.len(), 2);
 
         // Verify Pointer logic
@@ -949,7 +942,7 @@ mod miri_tests {
         }
 
         // 3. Restore
-        let restored_sub = unsafe { dma.restore_sub_slice_mut(fence) };
+        let restored_sub = unsafe { dma.take(fence) };
         let full_slice = restored_sub.take();
 
         // 4. Validate
@@ -972,12 +965,12 @@ mod miri_tests {
             let mut sub = SubSliceMut::new(&mut data);
             sub.slice(5..5);
 
-            let dma = unsafe { DmaSubSliceMut::from_sub_slice_mut(sub, fence) };
+            let dma = unsafe { DmaSubSliceMut::new(sub, fence) };
             assert_eq!(dma.len(), 0);
 
             // Verify we return the correct ptr, even if we shouldn't deref it
             assert_eq!(dma.as_mut_ptr(), data_ptr.wrapping_add(5));
-            unsafe { dma.restore_sub_slice_mut(fence) };
+            unsafe { dma.take(fence) };
         }
 
         // Case B: Range at exact end
@@ -987,13 +980,13 @@ mod miri_tests {
             let mut sub = SubSliceMut::new(&mut data);
             sub.slice(10..10); // End of buffer
 
-            let dma = unsafe { DmaSubSliceMut::from_sub_slice_mut(sub, fence) };
+            let dma = unsafe { DmaSubSliceMut::new(sub, fence) };
 
             // Pointer should point one past the end of the array
             let ptr_addr = dma.as_mut_ptr() as usize;
             assert_eq!(ptr_addr, base_addr + 10);
 
-            unsafe { dma.restore_sub_slice_mut(fence) };
+            unsafe { dma.take(fence) };
         }
 
         // Case C: Range out of bounds (Should be clamped by implementation)
@@ -1001,7 +994,7 @@ mod miri_tests {
             let mut sub = SubSliceMut::new(&mut data);
             sub.slice(8..15); // End is past 10
 
-            let dma = unsafe { DmaSubSliceMut::from_sub_slice_mut(sub, fence) };
+            let dma = unsafe { DmaSubSliceMut::new(sub, fence) };
 
             // Length should be clamped to available (10 - 8 = 2)
             assert_eq!(dma.len(), 2);
@@ -1011,7 +1004,7 @@ mod miri_tests {
                 simulate_dma_write(dma.as_mut_ptr(), 88u8, 1); // index 9
             }
 
-            let res = unsafe { dma.restore_sub_slice_mut(fence) };
+            let res = unsafe { dma.take(fence) };
             let arr = res.take();
             assert_eq!(arr[8], 99);
             assert_eq!(arr[9], 88);
