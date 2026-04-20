@@ -298,9 +298,7 @@ impl UarteRegistersManager {
 pub struct Uarte<'a> {
     registers: UarteRegistersManager,
     tx_client: OptionalCell<&'a dyn uart::TransmitClient>,
-    // tx_buffer: kernel::utilities::cells::TakeCell<'static, [u8]>,
     tx_len: Cell<usize>,
-    // tx_remaining_bytes: Cell<usize>,
     rx_client: OptionalCell<&'a dyn uart::ReceiveClient>,
     rx_len: Cell<usize>,
     rx_abort_in_progress: Cell<bool>,
