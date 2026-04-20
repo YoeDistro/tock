@@ -181,6 +181,9 @@ pub fn initialize_deferred_call_state<P: ThreadIdProvider>() {
 /// concurrently with calls to [`initialize_deferred_call_state`] or other calls
 /// to [`initialize_deferred_call_state_unsafe`].
 pub unsafe fn initialize_deferred_call_state_unsafe<P: ThreadIdProvider>() {
+    // # Safety
+    //
+    // See function safety description.
     unsafe {
         CTR.bind_to_thread_unsafe::<P>();
         BITMASK.bind_to_thread_unsafe::<P>();
