@@ -356,13 +356,13 @@ impl<'b> VirtqueueDmaBuffer<'b> {
     ) -> Self {
         match virtqueue_buffer {
             VirtqueueBuffer::DeviceReadable(sub_slice_mut_immut) => {
-                VirtqueueDmaBuffer::DeviceReadable(DmaSubSliceMutImmut::from_sub_slice_mut_immut(
+                VirtqueueDmaBuffer::DeviceReadable(DmaSubSliceMutImmut::new(
                     sub_slice_mut_immut,
                     fence,
                 ))
             }
             VirtqueueBuffer::DeviceWriteable(sub_slice_mut) => VirtqueueDmaBuffer::DeviceWriteable(
-                DmaSubSliceMut::from_sub_slice_mut(sub_slice_mut, fence),
+                DmaSubSliceMut::new_unsafe(sub_slice_mut, fence),
             ),
         }
     }
@@ -370,14 +370,10 @@ impl<'b> VirtqueueDmaBuffer<'b> {
     unsafe fn into_virtqueue_buffer(self, fence: impl DmaFence) -> VirtqueueBuffer<'b> {
         match self {
             VirtqueueDmaBuffer::DeviceReadable(dma_sub_slice_mut_immut) => {
-                VirtqueueBuffer::DeviceReadable(
-                    dma_sub_slice_mut_immut.restore_sub_slice_mut_immut(),
-                )
+                VirtqueueBuffer::DeviceReadable(dma_sub_slice_mut_immut.take())
             }
             VirtqueueDmaBuffer::DeviceWriteable(dma_sub_slice_mut) => {
-                VirtqueueBuffer::DeviceWriteable(unsafe {
-                    dma_sub_slice_mut.restore_sub_slice_mut(fence)
-                })
+                VirtqueueBuffer::DeviceWriteable(unsafe { dma_sub_slice_mut.take(fence) })
             }
         }
     }
