@@ -22,7 +22,7 @@
 /// destructor.
 #[macro_export]
 macro_rules! static_init {
-    ($T:ty, $e:expr_2021 $(,)?) => {{
+    ($T:ty, $e:expr $(,)?) => {{
         let mut buf = $crate::static_buf!($T);
         buf.write($e)
     }};
@@ -152,7 +152,7 @@ macro_rules! static_buf {
 /// possible.
 #[macro_export]
 macro_rules! static_named_buf {
-    ($T:ty, $N:expr_2021 $(,)?) => {{
+    ($T:ty, $N:literal $(,)?) => {{
         // Statically allocate a read-write buffer for the value without
         // actually writing anything, as well as a flag to track if
         // this memory has been initialized yet.
