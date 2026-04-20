@@ -179,7 +179,17 @@ impl UarteRegistersManager {
         }
     }
 
-    pub fn start_tx_dma(&self, buf: SubSliceMut<'static, u8>) {
+    /// Start a UART transmission with DMA.
+    ///
+    /// # Return
+    ///
+    /// `Ok(())` on successfully starting the DMA operation. `Err(())` if the
+    /// DMA is busy and the operation could not be started.
+    pub fn start_tx_dma(&self, buf: SubSliceMut<'static, u8>) -> Result<(), ()> {
+        if self.tx_dma_pending() {
+            return Err(());
+        }
+
         // To create a DmaFence we must trust the implementation.
         //
         // # Safety
@@ -204,6 +214,8 @@ impl UarteRegistersManager {
 
         // Start the TX DMA operation
         self.registers.task_starttx.write(Task::ENABLE::SET);
+
+        Ok(())
     }
 
     pub fn finish_tx_dma(&self) -> Option<(SubSliceMut<'static, u8>, usize)> {
@@ -235,7 +247,17 @@ impl UarteRegistersManager {
         self.tx_dma_buf.is_some()
     }
 
-    pub fn start_rx_dma(&self, buf: SubSliceMut<'static, u8>) {
+    /// Start a UART reception with DMA.
+    ///
+    /// # Return
+    ///
+    /// `Ok(())` on successfully starting the DMA operation. `Err(())` if the
+    /// DMA is busy and the operation could not be started.
+    pub fn start_rx_dma(&self, buf: SubSliceMut<'static, u8>) -> Result<(), ()> {
+        if self.rx_dma_pending() {
+            return Err(());
+        }
+
         // To create a DmaFence we must trust the implementation.
         //
         // # Safety
@@ -260,6 +282,8 @@ impl UarteRegistersManager {
 
         // Start the RX DMA operation
         self.registers.task_startrx.write(Task::ENABLE::SET);
+
+        Ok(())
     }
 
     pub fn finish_rx_dma(&self) -> Option<(SubSliceMut<'static, u8>, usize)> {
@@ -489,7 +513,7 @@ impl<'a> Uarte<'a> {
                     // Limit to at most the `UARTE_MAX_BUFFER_SIZE` bytes.
                     buf.slice(0..UARTE_MAX_BUFFER_SIZE);
                     // Send via DMA.
-                    self.registers.start_tx_dma(buf);
+                    let _ = self.registers.start_tx_dma(buf);
                     // Re-enable interrupts.
                     self.enable_tx_interrupts();
                 }
@@ -565,7 +589,7 @@ impl<'a> Uarte<'a> {
                         // Limit to at most the `UARTE_MAX_BUFFER_SIZE` bytes.
                         buf.slice(0..UARTE_MAX_BUFFER_SIZE);
                         // Receive via DMA.
-                        self.registers.start_rx_dma(buf);
+                        let _ = self.registers.start_rx_dma(buf);
                         // Re-enable interrupts.
                         self.enable_rx_interrupts();
                     }
@@ -622,7 +646,7 @@ impl<'a> Uarte<'a> {
 
         // Send the buffer using DMA. This is managed by the register manager to
         // ensure we are safely using DMA.
-        self.registers.start_tx_dma(slice_to_send);
+        let _ = self.registers.start_tx_dma(slice_to_send);
 
         // Enable interrupts so we get a interrupt when the transmission has
         // finished.
@@ -640,7 +664,7 @@ impl<'a> Uarte<'a> {
 
         // Use the buffer with DMA. This is managed by the register manager to
         // ensure we are safely using DMA.
-        self.registers.start_rx_dma(slice_to_receive);
+        let _ = self.registers.start_rx_dma(slice_to_receive);
 
         // Enable interrupts so we get a interrupt when the receive has
         // finished.
