@@ -22,6 +22,13 @@ pub struct CortexMDmaFence {
 /// [1]: https://developer.arm.com/documentation/dai0321/a/
 impl CortexMDmaFence {
     /// Construct a new [CortexMDmaFence].
+    ///
+    /// # Safety
+    ///
+    /// Users of this function guarantee that this fence is an appropriate
+    /// implementation of [`DmaFence`] for the platform on which this code is
+    /// running. In practice, this means that users must assert to be running on
+    /// an ARM Cortex-M (ARM-v6m / ARM-v7m) CPU.
     pub unsafe fn new() -> Self {
         Self { _private: () }
     }

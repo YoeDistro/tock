@@ -57,10 +57,13 @@
 ///
 /// This is an `unsafe` trait, as users of it rely on correct
 /// [`acquire`](Self::acquire) and [`release`](Self::acquire) implementations to
-/// maintain soundness. Specifically, an incorrect [`acquire`](Self::acquire)
-/// operation could cause DMA-issued writes to memory to be visible to Rust only
-/// *after* a shared or immutable reference to this buffer is made accessible,
-/// which effectively violates Rust's no-alias assumptions.
+/// maintain soundness.
+///
+/// Incorrect implementations of this trait can introduce undefined
+/// behavior. For example, an incorrect [`acquire`](Self::acquire) operation
+/// could cause DMA-issued writes to memory to be visible to Rust only *after* a
+/// shared or immutable reference to this buffer is made accessible, which
+/// effectively violates Rust's no-alias assumptions.
 pub unsafe trait DmaFence: core::fmt::Debug + Send + Sync + Copy {
     /// Expose prior writes to in-memory buffers to subsequent DMA operations.
     ///
