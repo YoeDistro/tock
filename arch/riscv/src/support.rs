@@ -6,7 +6,13 @@
 
 use crate::csr::{mstatus::mstatus, CSR};
 
-#[cfg(any(doc, all(target_arch = "riscv32", target_os = "none")))]
+#[cfg(any(
+    doc,
+    all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    )
+))]
 #[inline(always)]
 /// NOP instruction
 pub fn nop() {
@@ -16,7 +22,13 @@ pub fn nop() {
     }
 }
 
-#[cfg(any(doc, all(target_arch = "riscv32", target_os = "none")))]
+#[cfg(any(
+    doc,
+    all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    )
+))]
 #[inline(always)]
 /// WFI instruction
 pub unsafe fn wfi() {
@@ -51,13 +63,25 @@ where
 }
 
 // Mock implementations for tests on Travis-CI.
-#[cfg(not(any(doc, all(target_arch = "riscv32", target_os = "none"))))]
+#[cfg(not(any(
+    doc,
+    all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    )
+)))]
 /// NOP instruction (mock)
 pub fn nop() {
     unimplemented!()
 }
 
-#[cfg(not(any(doc, all(target_arch = "riscv32", target_os = "none"))))]
+#[cfg(not(any(
+    doc,
+    all(
+        any(target_arch = "riscv32", target_arch = "riscv64"),
+        target_os = "none"
+    )
+)))]
 /// WFI instruction (mock)
 pub unsafe fn wfi() {
     unimplemented!()
