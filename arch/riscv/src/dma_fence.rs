@@ -44,6 +44,7 @@ impl RiscvCoherentDmaFence {
     }
 }
 
+#[cfg(any(doc, all(target_arch = "riscv32", target_os = "none")))]
 unsafe impl DmaFence for RiscvCoherentDmaFence {
     /// Expose prior writes to in-memory buffers to subsequent DMA operations.
     ///
@@ -82,11 +83,10 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
     /// [1]: https://docs.riscv.org/reference/isa/_attachments/riscv-unprivileged.pdf
     #[inline(always)]
     fn release<T>(self, slice_ptr: *mut [T]) {
-        if cfg!(any(target_arch = "riscv32", target_arch = "riscv64")) {
-            let slice_start_ptr: *mut T = slice_ptr.cast();
-            unsafe {
-                core::arch::asm!(
-                    "
+        let slice_start_ptr: *mut T = slice_ptr.cast();
+        unsafe {
+            core::arch::asm!(
+                "
                         // This block is opaque to the compiler; it must assume
                         // that it could read the entire buffer from which the
                         // pointer stored in {dma_buffer_ptr_reg} was derived.
@@ -96,12 +96,8 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
                         // comment for explanation.
                         fence w, iorw
                     ",
-                    dma_buffer_ptr_reg = in(reg) slice_start_ptr,
-                );
-            }
-        } else {
-            // When building for another architecture, such as for tests or CI:
-            unimplemented!("RiscvCoherentDmaFence can only be used on RISC-V targets");
+                dma_buffer_ptr_reg = in(reg) slice_start_ptr,
+            );
         }
     }
 
@@ -140,11 +136,10 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
     /// [1]: https://docs.riscv.org/reference/isa/_attachments/riscv-unprivileged.pdf
     #[inline(always)]
     fn acquire<T>(self, slice_ptr: *mut [T]) {
-        if cfg!(any(target_arch = "riscv32", target_arch = "riscv64")) {
-            let slice_start_ptr: *mut T = slice_ptr.cast();
-            unsafe {
-                core::arch::asm!(
-                    "
+        let slice_start_ptr: *mut T = slice_ptr.cast();
+        unsafe {
+            core::arch::asm!(
+                "
                         // This block is opaque to the compiler; it must assume
                         // that it could write to the entire buffer from which
                         // the pointer stored in {dma_buffer_ptr_reg} was
@@ -155,12 +150,20 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
                         // explanation.
                         fence ir, r
                     ",
-                    dma_buffer_ptr_reg = in(reg) slice_start_ptr,
-                );
-            }
-        } else {
-            // When building for another architecture, such as for tests or CI:
-            unimplemented!("RiscvCoherentDmaFence can only be used on RISC-V targets");
+                dma_buffer_ptr_reg = in(reg) slice_start_ptr,
+            );
         }
+    }
+}
+
+#[cfg(not(any(doc, all(target_arch = "riscv32", target_os = "none"))))]
+unsafe impl DmaFence for RiscvCoherentDmaFence {
+    fn release<T>(self, _slice_ptr: *mut [T]) {
+        // When building for another architecture, such as for tests or CI:
+        unimplemented!("RiscvCoherentDmaFence can only be used on RISC-V targets");
+    }
+    fn acquire<T>(self, _slice_ptr: *mut [T]) {
+        // When building for another architecture, such as for tests or CI:
+        unimplemented!("RiscvCoherentDmaFence can only be used on RISC-V targets");
     }
 }
