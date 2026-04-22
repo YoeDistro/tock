@@ -87,15 +87,15 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
         unsafe {
             core::arch::asm!(
                 "
-                        // This block is opaque to the compiler; it must assume
-                        // that it could read the entire buffer from which the
-                        // pointer stored in {dma_buffer_ptr_reg} was derived.
+    // This block is opaque to the compiler; it must assume
+    // that it could read the entire buffer from which the
+    // pointer stored in {dma_buffer_ptr_reg} was derived.
 
-                        // Do not reorder prior memory writes over subsequent
-                        // I/O or memory reads or writes; see above Rust source
-                        // comment for explanation.
-                        fence w, iorw
-                    ",
+    // Do not reorder prior memory writes over subsequent
+    // I/O or memory reads or writes; see above Rust source
+    // comment for explanation.
+    fence w, iorw
+                ",
                 dma_buffer_ptr_reg = in(reg) slice_start_ptr,
             );
         }
@@ -140,16 +140,16 @@ unsafe impl DmaFence for RiscvCoherentDmaFence {
         unsafe {
             core::arch::asm!(
                 "
-                        // This block is opaque to the compiler; it must assume
-                        // that it could write to the entire buffer from which
-                        // the pointer stored in {dma_buffer_ptr_reg} was
-                        // derived.
+    // This block is opaque to the compiler; it must assume
+    // that it could write to the entire buffer from which
+    // the pointer stored in {dma_buffer_ptr_reg} was
+    // derived.
 
-                        // Do not reorder subsequent memory reads over prior I/O
-                        // or memory reads; see above Rust source comment for
-                        // explanation.
-                        fence ir, r
-                    ",
+    // Do not reorder subsequent memory reads over prior I/O
+    // or memory reads; see above Rust source comment for
+    // explanation.
+    fence ir, r
+                ",
                 dma_buffer_ptr_reg = in(reg) slice_start_ptr,
             );
         }
