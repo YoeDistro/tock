@@ -40,6 +40,7 @@ impl X86DmaFence {
     }
 }
 
+#[cfg(any(doc, target_arch = "x86"))]
 unsafe impl DmaFence for X86DmaFence {
     /// Expose prior writes to in-memory buffers to subsequent DMA operations.
     ///
@@ -64,21 +65,16 @@ unsafe impl DmaFence for X86DmaFence {
     /// accessing memory.
     #[inline(always)]
     fn release<T>(self, slice_ptr: *mut [T]) {
-        if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-            let slice_start_ptr: *mut T = slice_ptr.cast();
-            unsafe {
-                core::arch::asm!(
-                    "
+        let slice_start_ptr: *mut T = slice_ptr.cast();
+        unsafe {
+            core::arch::asm!(
+                "
                         // This block is opaque to the compiler; it must assume
                         // that it could read the entire buffer from which the
                         // pointer stored in {dma_buffer_ptr_reg} was derived.
                     ",
-                    dma_buffer_ptr_reg = in(reg) slice_start_ptr,
-                );
-            }
-        } else {
-            // When building for another architecture, such as for tests or CI:
-            unimplemented!("X86DmaFence can only be used on x86 targets");
+                dma_buffer_ptr_reg = in(reg) slice_start_ptr,
+            );
         }
     }
 
@@ -105,22 +101,29 @@ unsafe impl DmaFence for X86DmaFence {
     /// accessing memory.
     #[inline(always)]
     fn acquire<T>(self, slice_ptr: *mut [T]) {
-        if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-            let slice_start_ptr: *mut T = slice_ptr.cast();
-            unsafe {
-                core::arch::asm!(
-                    "
+        let slice_start_ptr: *mut T = slice_ptr.cast();
+        unsafe {
+            core::arch::asm!(
+                "
                         // This block is opaque to the compiler; it must assume
                         // that it could write to the entire buffer from which
                         // the pointer stored in {dma_buffer_ptr_reg} was
                         // derived.
                     ",
-                    dma_buffer_ptr_reg = in(reg) slice_start_ptr,
-                );
-            }
-        } else {
-            // When building for another architecture, such as for tests or CI:
-            unimplemented!("X86DmaFence can only be used on x86 targets");
+                dma_buffer_ptr_reg = in(reg) slice_start_ptr,
+            );
         }
+    }
+}
+
+#[cfg(not(any(doc, target_arch = "x86")))]
+unsafe impl DmaFence for X86DmaFence {
+    fn release<T>(self, _slice_ptr: *mut [T]) {
+        // When building for another architecture, such as for tests or CI:
+        unimplemented!("X86DmaFence can only be used on x86 targets");
+    }
+    fn acquire<T>(self, _slice_ptr: *mut [T]) {
+        // When building for another architecture, such as for tests or CI:
+        unimplemented!("X86DmaFence can only be used on x86 targets");
     }
 }
