@@ -69,10 +69,10 @@ unsafe impl DmaFence for X86DmaFence {
         unsafe {
             core::arch::asm!(
                 "
-                        // This block is opaque to the compiler; it must assume
-                        // that it could read the entire buffer from which the
-                        // pointer stored in {dma_buffer_ptr_reg} was derived.
-                    ",
+    // This block is opaque to the compiler; it must assume
+    // that it could read the entire buffer from which the
+    // pointer stored in {dma_buffer_ptr_reg} was derived.
+                ",
                 dma_buffer_ptr_reg = in(reg) slice_start_ptr,
             );
         }
@@ -105,11 +105,11 @@ unsafe impl DmaFence for X86DmaFence {
         unsafe {
             core::arch::asm!(
                 "
-                        // This block is opaque to the compiler; it must assume
-                        // that it could write to the entire buffer from which
-                        // the pointer stored in {dma_buffer_ptr_reg} was
-                        // derived.
-                    ",
+    // This block is opaque to the compiler; it must assume
+    // that it could write to the entire buffer from which
+    // the pointer stored in {dma_buffer_ptr_reg} was
+    // derived.
+                ",
                 dma_buffer_ptr_reg = in(reg) slice_start_ptr,
             );
         }
