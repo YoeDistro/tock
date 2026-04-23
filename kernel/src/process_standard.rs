@@ -1741,11 +1741,11 @@ impl<C: 'static + Chip, D: 'static + ProcessStandardDebug> ProcessStandard<'_, C
         {
             if config::CONFIG.debug_load_processes {
                 debug!(
-                        "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate MPU region for flash",
-                        pb.flash.as_ptr() as usize,
-                        pb.flash.as_ptr() as usize + pb.flash.len() - 1,
-                        process_name
-                    );
+                    "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate MPU region for flash",
+                    pb.flash.as_ptr() as usize,
+                    pb.flash.as_ptr() as usize + pb.flash.len() - 1,
+                    process_name
+                );
             }
             return Err((ProcessLoadError::MpuInvalidFlashLength, remaining_memory));
         }
@@ -1887,12 +1887,12 @@ impl<C: 'static + Chip, D: 'static + ProcessStandardDebug> ProcessStandard<'_, C
                 // Failed to load process. Insufficient memory.
                 if config::CONFIG.debug_load_processes {
                     debug!(
-                            "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate memory region of size >= {:#X}",
-                            pb.flash.as_ptr() as usize,
-                            pb.flash.as_ptr() as usize + pb.flash.len() - 1,
-                            process_name,
-                            min_total_memory_size
-                        );
+                        "[!] flash={:#010X}-{:#010X} process={:?} - couldn't allocate memory region of size >= {:#X}",
+                        pb.flash.as_ptr() as usize,
+                        pb.flash.as_ptr() as usize + pb.flash.len() - 1,
+                        process_name,
+                        min_total_memory_size
+                    );
                 }
                 return Err((ProcessLoadError::NotEnoughMemory, remaining_memory));
             }
