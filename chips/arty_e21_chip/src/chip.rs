@@ -133,20 +133,17 @@ impl<'a, I: InterruptService + 'a> ArtyExx<'a, I> {
     pub unsafe fn configure_trap_handler(&self) {
         unimplemented!()
     }
-
-    /// Generic helper initialize function to setup all of the chip specific
-    /// operations. Different boards can call the functions that `initialize()`
-    /// calls directly if it needs to use a custom setup operation.
-    pub unsafe fn initialize(&self) {
-        self.disable_machine_timer();
-        self.configure_trap_handler();
-    }
 }
 
 impl<'a, I: InterruptService + 'a> kernel::platform::chip::Chip for ArtyExx<'a, I> {
     type MPU = PMPUserMPU<2, SimplePMP<4>>;
     type UserspaceKernelBoundary = rv32i::syscall::SysCall;
     type ThreadIdProvider = rv32i::thread_id::RiscvThreadIdProvider;
+
+    fn init() {
+        self.disable_machine_timer();
+        self.configure_trap_handler();
+    }
 
     fn mpu(&self) -> &Self::MPU {
         &self.pmp
