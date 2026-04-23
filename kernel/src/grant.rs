@@ -130,9 +130,10 @@ use core::cmp;
 use core::marker::PhantomData;
 use core::mem::{align_of, size_of};
 use core::ops::{Deref, DerefMut};
-use core::ptr::{write, NonNull};
+use core::ptr::{NonNull, write};
 use core::slice;
 
+use crate::ErrorCode;
 use crate::config;
 use crate::debug;
 use crate::kernel::Kernel;
@@ -143,7 +144,6 @@ use crate::processbuffer::{ReadOnlyProcessBufferRef, ReadWriteProcessBufferRef};
 use crate::upcall::{Upcall, UpcallError, UpcallId};
 use crate::utilities::capability_ptr::CapabilityPtr;
 use crate::utilities::machine_register::MachineRegister;
-use crate::ErrorCode;
 
 /// Tracks how many upcalls a grant instance supports automatically.
 pub trait UpcallSize {
