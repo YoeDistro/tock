@@ -28,9 +28,9 @@ use core::cell::Cell;
 use core::marker::PhantomData;
 use core::ops::{Deref, Index, Range, RangeFrom, RangeTo};
 
+use crate::ErrorCode;
 use crate::capabilities;
 use crate::process::{self, ProcessId};
-use crate::ErrorCode;
 
 /// Convert a process buffer's internal pointer+length representation to a
 /// [`ReadableProcessSlice`].
