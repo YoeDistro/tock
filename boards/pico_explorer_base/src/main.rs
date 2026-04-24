@@ -275,7 +275,7 @@ pub unsafe fn start() -> (
         Rp2040DefaultPeripherals,
         Rp2040DefaultPeripherals::new(clocks, resets)
     );
-    peripherals.resolve_dependencies();
+    peripherals.init();
 
     // Reset all peripherals except QSPI (we might be booting from Flash), PLL USB and PLL SYS
     resets.reset_all_except(&[

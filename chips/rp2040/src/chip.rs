@@ -160,7 +160,7 @@ impl Rp2040DefaultPeripherals<'_> {
         }
     }
 
-    pub fn resolve_dependencies(&'static self) {
+    pub fn init(&'static self) {
         kernel::deferred_call::DeferredCallClient::register(&self.uart0);
         kernel::deferred_call::DeferredCallClient::register(&self.uart1);
         kernel::deferred_call::DeferredCallClient::register(&self.rtc);
