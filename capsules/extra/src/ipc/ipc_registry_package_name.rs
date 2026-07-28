@@ -103,12 +103,14 @@ impl<C: ProcessManagementCapability> IpcRegistryPackageName<C> {
             app.is_registered = true;
 
             // Schedule registration complete callback
-            let _ = kerneldata.schedule_upcall(upcall::REGISTRATION_COMPLETE, (1, 0, 0));
+            // upcall arguments-> status: StatusCode
+            let _ = kerneldata.schedule_upcall(upcall::REGISTRATION_COMPLETE, (0, 0, 0));
         })?;
 
         // Notify all other apps of a new registration. Only apps that are subscribed will get the notification.
         self.apps.each(|otherid, _, kerneldata| {
             if otherid != processid {
+                // upcall arguments-> no arguments
                 let _ = kerneldata.schedule_upcall(upcall::NEW_REGISTRATION, (0, 0, 0));
             }
         });
@@ -167,9 +169,10 @@ impl<C: ProcessManagementCapability> IpcRegistryPackageName<C> {
                         // Schedule discovery complete callback
                         self.apps.enter(processid, |_, kerneldata| {
                             let ipc_id = IpcIdentifier::new_from_processid(otherid);
+                            // upcall arguments-> status: StatusCode, ipc_id_lower: u32, ipc_id_upper: u32
                             let _ = kerneldata.schedule_upcall(
                                 upcall::DISCOVERY_COMPLETE,
-                                (1, ipc_id.lower() as usize, ipc_id.upper() as usize),
+                                (0, ipc_id.lower() as usize, ipc_id.upper() as usize),
                             );
                         })?;
 
@@ -182,7 +185,11 @@ impl<C: ProcessManagementCapability> IpcRegistryPackageName<C> {
 
         // No match found, return successfully but upcall that discovery failed instead
         self.apps.enter(processid, |_, kerneldata| {
-            let _ = kerneldata.schedule_upcall(upcall::DISCOVERY_COMPLETE, (0, 0, 0));
+            // upcall arguments-> status: StatusCode
+            let _ = kerneldata.schedule_upcall(
+                upcall::DISCOVERY_COMPLETE,
+                (ErrorCode::NODEVICE.into(), 0, 0),
+            );
         })?;
         Ok(())
     }

@@ -22,7 +22,6 @@
 //!
 //! TODO add example of how to instantiate
 
-use kernel::debug;
 use kernel::grant::{AllowRoCount, AllowRwCount, Grant, UpcallCount};
 use kernel::processbuffer::{ReadableProcessBuffer, WriteableProcessBuffer};
 use kernel::syscall::{CommandReturn, SyscallDriver};
@@ -58,9 +57,11 @@ mod upcall {
     pub const COUNT: u8 = 2;
 }
 
+//TODO: Change this App to hold an enum with states: None,
+//Client(IpcIdentifier), Server(IpcIdentifier)
+
 /// Per-process metadata
-//TODO: remove debug here
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct App {
     client_transaction: Option<IpcIdentifier>,
     server_transaction: Option<IpcIdentifier>,
@@ -114,7 +115,7 @@ impl IpcSynchronousMailbox {
                 // Send request-waiting upcall to destination with client ID
                 self.apps.enter(cntr.processid(), |_, server_kerneldata| {
                     let client_ipc_id = IpcIdentifier::new_from_processid(processid);
-                    debug!("KERNEL: sending upcall to {}", cntr.processid().id());
+                    // upcall arguments-> ipc_id_lower: u32, ipc_id_upper: u32
                     let _ = server_kerneldata.schedule_upcall(
                         upcall::SERVER_REQUEST_WAITING,
                         (
@@ -163,6 +164,9 @@ impl IpcSynchronousMailbox {
         // process that then dies. In all cases there may be no request to get.
         // Similarly, a server may end up sending a response that is no longer
         // being waited for, in which case it'll just be dropped.
+        //
+        // Note: there may be no match if the server faulted after the request
+        // was started but before it was completed.
         for cntr in self.apps.iter() {
             // skip this process
             if cntr.processid() != processid {
@@ -392,14 +396,14 @@ impl IpcSynchronousMailbox {
                         client_app.client_transaction = None;
 
                         if !server_len_longer {
+                            // upcall arguments-> status: StatusCode, data_len: usize
                             let _ = client_kerneldata.schedule_upcall(
-                                // status, data length
                                 upcall::CLIENT_RESPONSE_RECEIVED,
                                 (0, data_len, 0),
                             );
                         } else {
+                            // upcall arguments-> status: StatusCode, data_len: usize
                             let _ = client_kerneldata.schedule_upcall(
-                                // status, data length
                                 upcall::CLIENT_RESPONSE_RECEIVED,
                                 (ErrorCode::SIZE.into(), data_len, 0),
                             );
@@ -415,7 +419,7 @@ impl IpcSynchronousMailbox {
                     .enter(client_processid, |client_app, client_kerneldata| {
                         client_app.client_transaction = None;
 
-                        // status, data length
+                        // upcall arguments-> status: StatusCode
                         let _ = client_kerneldata.schedule_upcall(
                             upcall::CLIENT_RESPONSE_RECEIVED,
                             (ErrorCode::FAIL.into(), 0, 0),
@@ -442,10 +446,6 @@ impl IpcSynchronousMailbox {
         })?;
 
         if let Some(client_ipc_id) = transaction {
-            debug!(
-                "KERNEL: sending response to client {}",
-                Into::<u64>::into(client_ipc_id)
-            );
             // Check that client_ipc_id is a valid app
             let mut client: Option<ProcessId> = None;
             for cntr in self.apps.iter() {
@@ -456,10 +456,6 @@ impl IpcSynchronousMailbox {
                     // Found the client, need to check if they have a transaction
                     // with us still
                     self.apps.enter(cntr.processid(), |client_app, _| {
-                        debug!(
-                            "KERNEL: found client, they have transaction: {:?}",
-                            client_app.client_transaction
-                        );
                         if let Some(transaction_ipc_id) = client_app.client_transaction
                             && transaction_ipc_id == IpcIdentifier::new_from_processid(processid)
                         {
@@ -516,12 +512,6 @@ impl SyscallDriver for IpcSynchronousMailbox {
         data2: usize,
         processid: ProcessId,
     ) -> CommandReturn {
-        debug!(
-            "KERNEL: Got request {} from {}",
-            command_num,
-            processid.id()
-        );
-
         let ipc_id = IpcIdentifier::new_from_halves(data1 as u32, data2 as u32);
 
         match command_num {
