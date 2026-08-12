@@ -64,12 +64,12 @@ extern "C" {
 ///    any Rust code runs. See <https://github.com/tock/tock/issues/2222> for more
 ///    information.
 /// 3. Finally it calls `main()`, the main entry point for Tock boards.
-#[cfg(any(doc, any(target_arch = "riscv32", target_arch = "riscv64")))]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 // Only apply the `link_section` attribute when actually targeting bare-metal
-// RISC-V. Host builds (e.g. `doc`, tests, clippy on macOS, Windows, Linux,
-// ...) use object formats (Mach-O, PE, ...) that reject a bare section name
-// like this, yielding errors such as: `mach-o section specifier requires a
-// segment and section separated by a comma`.
+// RISC-V (`target_os = "none"`). Non-bare-metal object formats (Mach-O, PE,
+// ...) reject a bare section name like this, yielding errors such as:
+// `mach-o section specifier requires a segment and section separated by a
+// comma`.
 #[cfg_attr(
     any(
         all(target_arch = "riscv32", target_os = "none"),
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn initialize_ram_jump_to_main() {
 }
 
 // Mock implementation for tests on Travis-CI.
-#[cfg(not(any(doc, any(target_arch = "riscv32", target_arch = "riscv64"))))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 pub unsafe extern "C" fn initialize_ram_jump_to_main() {
     unimplemented!()
 }
@@ -202,7 +202,6 @@ pub unsafe fn configure_trap_handler() {
 
 // Mock implementation for tests on Travis-CI.
 #[cfg(not(any(
-    doc,
     all(target_arch = "riscv32", target_os = "none"),
     all(target_arch = "riscv64", target_os = "none")
 )))]
@@ -313,15 +312,14 @@ pub extern "C" fn _start_trap() -> ! {
 /// global state (subject to synchronization), etc. It must still abide to
 /// the contract as stated above.
 #[cfg(any(
-    doc,
     all(target_arch = "riscv32", target_os = "none"),
     all(target_arch = "riscv64", target_os = "none")
 ))]
 // Only apply the `link_section` attribute when actually targeting bare-metal
-// RISC-V. Host builds (e.g. `doc`, tests, clippy on macOS, Windows, Linux,
-// ...) use object formats (Mach-O, PE, ...) that reject a bare section name
-// like this, yielding errors such as: `mach-o section specifier requires a
-// segment and section separated by a comma`.
+// RISC-V (`target_os = "none"`). Non-bare-metal object formats (Mach-O, PE,
+// ...) reject a bare section name like this, yielding errors such as:
+// `mach-o section specifier requires a segment and section separated by a
+// comma`.
 #[cfg_attr(
     any(
         all(target_arch = "riscv32", target_os = "none"),
@@ -491,7 +489,7 @@ pub extern "C" fn _start_trap() -> ! {
 /// <https://elixir.bootlin.com/linux/v5.12.10/source/arch/riscv/include/asm/jump_label.h#L21>
 /// as suggested by the RISC-V developers:
 /// <https://groups.google.com/a/groups.riscv.org/g/isa-dev/c/XKkYacERM04/m/CdpOcqtRAgAJ>
-#[cfg(any(doc, any(target_arch = "riscv32", target_arch = "riscv64")))]
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 pub unsafe fn semihost_command(command: usize, arg0: usize, arg1: usize) -> usize {
     use core::arch::asm;
     let res;
@@ -515,7 +513,7 @@ pub unsafe fn semihost_command(command: usize, arg0: usize, arg1: usize) -> usiz
 }
 
 // Mock implementation for tests on Travis-CI.
-#[cfg(not(any(doc, any(target_arch = "riscv32", target_arch = "riscv64"),)))]
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 pub unsafe fn semihost_command(_command: usize, _arg0: usize, _arg1: usize) -> usize {
     unimplemented!()
 }
