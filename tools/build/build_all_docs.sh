@@ -117,12 +117,17 @@ trap 'rm -rf "$WORK"' EXIT
 META="$WORK/meta"
 mkdir -p "$META/host"
 
-# 1. Host pass: every crate not in CRATE_TARGETS, plus dependencies.
+# 1. Host pass: every workspace crate not in CRATE_TARGETS. --no-deps
+# excludes external (crates.io) dependencies -- their types don't appear
+# in any current public API here, so this just drops ~30 crates' worth of
+# irrelevant, oversized docs (things like typenum's type-level numerals)
+# from the site; if that ever changes, an external type in a public
+# signature just renders unlinked instead of pointing to a local page.
 # RUSTDOCFLAGS makes each crate write its own non-colliding <crate>.json
 # into $META/host.
 CARGO_TARGET_DIR="$WORK" \
     RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -Z unstable-options --write-doc-meta-dir=$META/host" \
-    cargo doc
+    cargo doc --no-deps
 
 # CRATE_TARGETS crates get pulled into the host pass too, as dependencies
 # of the boards/chips that use them. Prune their host-pass meta so the
