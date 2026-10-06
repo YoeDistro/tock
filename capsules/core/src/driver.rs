@@ -30,6 +30,10 @@ pub const fn dup_driver_num(driver_num: usize, instance_num: usize) -> usize {
         "This mechanism only supports up to 15 additional driver numbers."
     );
     assert!(
+        instance_num > 0,
+        "This mechanism is for new instance indices above the base driver number."
+    );
+    assert!(
         (driver_num & 0x0f00_0000) == 0,
         "Must use the base driver number to create a duplicate"
     );
