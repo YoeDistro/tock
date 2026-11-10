@@ -14,13 +14,14 @@ use kernel::platform::chip::{Chip, InterruptService};
 use kernel::utilities::registers::interfaces::{ReadWriteable, Readable};
 
 use rv32i::csr::{CSR, mcause, mie::mie, mip::mip};
+use tock_registers::Mmio32;
 
 use crate::plic::PLIC;
 use sifive::plic::Plic;
 
 use crate::interrupts;
 
-use virtio::transports::mmio::VirtIOMMIODevice;
+use virtio::transports::mmio::{VirtIOMMIODevice, virtio_mmio_device_registers};
 
 type QemuRv32VirtPMP = rv32i::pmp::PMPUserMPU<
     5,
@@ -39,7 +40,7 @@ pub struct QemuRv32VirtChip<'a, I: InterruptService + 'a> {
 
 pub struct QemuRv32VirtDefaultPeripherals<'a> {
     pub uart0: qemu_virt_chip::uart::Uart16550<'a>,
-    pub virtio_mmio: [VirtIOMMIODevice; 8],
+    pub virtio_mmio: [VirtIOMMIODevice<virtio_mmio_device_registers::Real<Mmio32>>; 8],
     pub pflash: crate::pflash::Pflash0<'a>,
 }
 
@@ -47,16 +48,13 @@ impl QemuRv32VirtDefaultPeripherals<'_> {
     pub fn new() -> Self {
         Self {
             uart0: qemu_virt_chip::uart::Uart16550::new(crate::uart::UART0_BASE),
-            virtio_mmio: [
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_0_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_1_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_2_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_3_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_4_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_5_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_6_BASE),
-                VirtIOMMIODevice::new(crate::virtio_mmio::VIRTIO_MMIO_7_BASE),
-            ],
+            // Safety:
+            // 1. Unsound: We don't know whether this is a riscv32 system with
+            //    VirtIO.
+            // 2. Unsound: we don't do anything to deconflict DMA operations.
+            virtio_mmio: unsafe {
+                VirtIOMMIODevice::<virtio_mmio_device_registers::Real<Mmio32>>::new_all()
+            },
             pflash: crate::pflash::Pflash0::new(crate::pflash::PFLASH0_BASE),
         }
     }
